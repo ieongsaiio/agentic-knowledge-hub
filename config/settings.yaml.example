@@ -1,0 +1,81 @@
+# Agentic Knowledge Hub - Configuration Example
+# Copy this file to config/settings.yaml and fill in provider-specific values.
+
+llm:
+  provider: ""
+  model: ""
+  deployment_name: ""
+  base_url: ""
+  api_version: ""
+  api_key: ""
+  temperature: ""
+  max_tokens: ""
+  extra_chat_configs:
+    thinking:
+      type: ""
+    stream: ""
+
+embedding:
+  provider: ""
+  model: ""
+  dimensions: ""
+  api_key: ""
+  api_version: ""
+  azure_endpoint: ""
+  deployment_name: ""
+  base_url: ""
+
+vision_llm:
+  enabled: ""
+  provider: ""
+  model: ""
+  base_url: ""
+  api_key: ""
+  api_version: ""
+  azure_endpoint: ""
+  deployment_name: ""
+  max_image_size: ""
+
+vector_store:
+  provider: ""
+  persist_directory: ""
+  collection_name: ""
+
+retrieval:
+  dense_top_k: ""
+  sparse_top_k: ""
+  fusion_top_k: ""
+  rrf_k: ""
+
+rerank:
+  enabled: ""
+  provider: ""
+  model: ""
+  api_args:
+    base_url: ""
+    api_key_env: ""
+    model: ""
+    return_documents: ""
+  top_k: ""
+
+evaluation:
+  enabled: ""
+  provider: ""
+  metrics:
+    - ""
+
+observability:
+  log_level: ""
+  trace_enabled: ""
+  trace_file: ""
+  structured_logging: ""
+
+ingestion:
+  chunk_size: ""
+  chunk_overlap: ""
+  splitter: ""
+  batch_size: ""
+  chunk_refiner:
+    use_llm: ""
+  metadata_enricher:
+    use_llm: ""
