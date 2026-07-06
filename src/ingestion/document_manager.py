@@ -238,7 +238,7 @@ class DocumentManager:
         # 2. BM25 – remove postings for this document
         try:
             result.bm25_removed = self.bm25.remove_document(
-                source_hash, collection
+                f"doc_{source_hash[:16]}", collection
             )
         except Exception as e:
             result.errors.append(f"BM25 remove failed: {e}")
@@ -257,7 +257,7 @@ class DocumentManager:
         # 4. FileIntegrity – remove the ingestion record
         try:
             result.integrity_removed = self.integrity.remove_record(
-                source_hash
+                source_hash, collection
             )
         except Exception as e:
             result.errors.append(f"FileIntegrity remove failed: {e}")

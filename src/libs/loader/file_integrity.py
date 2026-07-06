@@ -43,11 +43,16 @@ class FileIntegrityChecker(ABC):
         pass
     
     @abstractmethod
-    def should_skip(self, file_hash: str) -> bool:
-        """Check if file should be skipped based on hash.
+    def should_skip(
+        self,
+        file_hash: str,
+        collection: Optional[str] = None,
+    ) -> bool:
+        """Check if file should be skipped based on hash and collection.
         
         Args:
             file_hash: SHA256 hash of the file.
+            collection: Collection/namespace identifier.
             
         Returns:
             True if file has been successfully processed before, False otherwise.
@@ -78,7 +83,8 @@ class FileIntegrityChecker(ABC):
         self, 
         file_hash: str, 
         file_path: str, 
-        error_msg: str
+        error_msg: str,
+        collection: Optional[str] = None,
     ) -> None:
         """Mark file processing as failed.
         
@@ -89,6 +95,7 @@ class FileIntegrityChecker(ABC):
             file_hash: SHA256 hash of the file.
             file_path: Original file path (for tracking).
             error_msg: Error message describing the failure.
+            collection: Collection/namespace identifier.
             
         Raises:
             RuntimeError: If database operation fails.
@@ -96,11 +103,16 @@ class FileIntegrityChecker(ABC):
         pass
 
     @abstractmethod
-    def remove_record(self, file_hash: str) -> bool:
-        """Remove an ingestion record by its file hash.
+    def remove_record(
+        self,
+        file_hash: str,
+        collection: Optional[str] = None,
+    ) -> bool:
+        """Remove ingestion records by file hash and optional collection.
 
         Args:
             file_hash: SHA256 hash identifying the record.
+            collection: When provided, remove only that collection's record.
 
         Returns:
             True if a record was deleted, False if not found.
@@ -132,13 +144,14 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
     
     Database Schema:
         ingestion_history (
-            file_hash TEXT PRIMARY KEY,
+            file_hash TEXT NOT NULL,
+            collection TEXT NOT NULL,
             file_path TEXT NOT NULL,
             status TEXT NOT NULL,  -- 'success' or 'failed'
-            collection TEXT,
             error_msg TEXT,
             processed_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (file_hash, collection)
         )
     
     Args:
@@ -180,18 +193,17 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
             # Enable WAL mode for concurrent access
             conn.execute("PRAGMA journal_mode=WAL")
             
-            # Create table if not exists
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS ingestion_history (
-                    file_hash TEXT PRIMARY KEY,
-                    file_path TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    collection TEXT,
-                    error_msg TEXT,
-                    processed_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-            """)
+            table_exists = conn.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'ingestion_history'
+                """
+            ).fetchone()
+
+            if table_exists and self._uses_legacy_primary_key(conn):
+                self._migrate_legacy_schema(conn)
+            else:
+                self._create_schema(conn)
             
             # Create index on status for faster queries
             conn.execute("""
@@ -202,6 +214,62 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
             conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _create_schema(conn: sqlite3.Connection) -> None:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ingestion_history (
+                file_hash TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                collection TEXT NOT NULL DEFAULT '',
+                error_msg TEXT,
+                processed_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (file_hash, collection)
+            )
+        """)
+
+    @staticmethod
+    def _uses_legacy_primary_key(conn: sqlite3.Connection) -> bool:
+        columns = conn.execute(
+            "PRAGMA table_info(ingestion_history)"
+        ).fetchall()
+        primary_key = [
+            row[1]
+            for row in sorted(columns, key=lambda row: row[5])
+            if row[5] > 0
+        ]
+        return primary_key != ["file_hash", "collection"]
+
+    def _migrate_legacy_schema(self, conn: sqlite3.Connection) -> None:
+        """Migrate file-hash-only history without losing existing records."""
+        conn.execute(
+            "ALTER TABLE ingestion_history RENAME TO ingestion_history_legacy"
+        )
+        conn.execute("DROP INDEX IF EXISTS idx_status")
+        self._create_schema(conn)
+        conn.execute("""
+            INSERT INTO ingestion_history (
+                file_hash,
+                file_path,
+                status,
+                collection,
+                error_msg,
+                processed_at,
+                updated_at
+            )
+            SELECT
+                file_hash,
+                file_path,
+                status,
+                COALESCE(collection, ''),
+                error_msg,
+                processed_at,
+                updated_at
+            FROM ingestion_history_legacy
+        """)
+        conn.execute("DROP TABLE ingestion_history_legacy")
     
     def compute_sha256(self, file_path: str) -> str:
         """Compute SHA256 hash of file using chunked reading.
@@ -240,7 +308,11 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
         
         return sha256_hash.hexdigest()
     
-    def should_skip(self, file_hash: str) -> bool:
+    def should_skip(
+        self,
+        file_hash: str,
+        collection: Optional[str] = None,
+    ) -> bool:
         """Check if file should be skipped.
         
         Only files with status='success' are skipped. Failed files
@@ -248,6 +320,7 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
         
         Args:
             file_hash: SHA256 hash of the file.
+            collection: Collection/namespace identifier.
             
         Returns:
             True if file has status='success', False otherwise.
@@ -255,8 +328,11 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
         conn = sqlite3.connect(self.db_path)
         try:
             cursor = conn.execute(
-                "SELECT status FROM ingestion_history WHERE file_hash = ?",
-                (file_hash,)
+                """
+                SELECT status FROM ingestion_history
+                WHERE file_hash = ? AND collection = ?
+                """,
+                (file_hash, collection or ""),
             )
             result = cursor.fetchone()
             
@@ -286,13 +362,17 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
             RuntimeError: If database operation fails.
         """
         now = datetime.now(timezone.utc).isoformat()
+        collection_key = collection or ""
         
         conn = sqlite3.connect(self.db_path)
         try:
             # Check if record exists to preserve processed_at
             cursor = conn.execute(
-                "SELECT processed_at FROM ingestion_history WHERE file_hash = ?",
-                (file_hash,)
+                """
+                SELECT processed_at FROM ingestion_history
+                WHERE file_hash = ? AND collection = ?
+                """,
+                (file_hash, collection_key),
             )
             result = cursor.fetchone()
             
@@ -305,15 +385,21 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
                         collection = ?,
                         error_msg = NULL,
                         updated_at = ?
-                    WHERE file_hash = ?
-                """, (file_path, collection, now, file_hash))
+                    WHERE file_hash = ? AND collection = ?
+                """, (
+                    file_path,
+                    collection_key,
+                    now,
+                    file_hash,
+                    collection_key,
+                ))
             else:
                 # Insert new record
                 conn.execute("""
                     INSERT INTO ingestion_history 
                     (file_hash, file_path, status, collection, error_msg, processed_at, updated_at)
                     VALUES (?, ?, 'success', ?, NULL, ?, ?)
-                """, (file_hash, file_path, collection, now, now))
+                """, (file_hash, file_path, collection_key, now, now))
             
             conn.commit()
         except sqlite3.Error as e:
@@ -325,7 +411,8 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
         self, 
         file_hash: str, 
         file_path: str, 
-        error_msg: str
+        error_msg: str,
+        collection: Optional[str] = None,
     ) -> None:
         """Mark file processing as failed.
         
@@ -335,18 +422,23 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
             file_hash: SHA256 hash of the file.
             file_path: Original file path (for tracking).
             error_msg: Error message describing the failure.
+            collection: Collection/namespace identifier.
             
         Raises:
             RuntimeError: If database operation fails.
         """
         now = datetime.now(timezone.utc).isoformat()
+        collection_key = collection or ""
         
         conn = sqlite3.connect(self.db_path)
         try:
             # Check if record exists to preserve processed_at
             cursor = conn.execute(
-                "SELECT processed_at FROM ingestion_history WHERE file_hash = ?",
-                (file_hash,)
+                """
+                SELECT processed_at FROM ingestion_history
+                WHERE file_hash = ? AND collection = ?
+                """,
+                (file_hash, collection_key),
             )
             result = cursor.fetchone()
             
@@ -356,17 +448,32 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
                     UPDATE ingestion_history 
                     SET file_path = ?,
                         status = 'failed',
+                        collection = ?,
                         error_msg = ?,
                         updated_at = ?
-                    WHERE file_hash = ?
-                """, (file_path, error_msg, now, file_hash))
+                    WHERE file_hash = ? AND collection = ?
+                """, (
+                    file_path,
+                    collection_key,
+                    error_msg,
+                    now,
+                    file_hash,
+                    collection_key,
+                ))
             else:
                 # Insert new record
                 conn.execute("""
                     INSERT INTO ingestion_history 
                     (file_hash, file_path, status, collection, error_msg, processed_at, updated_at)
-                    VALUES (?, ?, 'failed', NULL, ?, ?, ?)
-                """, (file_hash, file_path, error_msg, now, now))
+                    VALUES (?, ?, 'failed', ?, ?, ?, ?)
+                """, (
+                    file_hash,
+                    file_path,
+                    collection_key,
+                    error_msg,
+                    now,
+                    now,
+                ))
             
             conn.commit()
         except sqlite3.Error as e:
@@ -374,21 +481,35 @@ class SQLiteIntegrityChecker(FileIntegrityChecker):
         finally:
             conn.close()
 
-    def remove_record(self, file_hash: str) -> bool:
-        """Remove an ingestion record by its file hash.
+    def remove_record(
+        self,
+        file_hash: str,
+        collection: Optional[str] = None,
+    ) -> bool:
+        """Remove ingestion records by file hash and optional collection.
 
         Args:
             file_hash: SHA256 hash identifying the record.
+            collection: When provided, remove only that collection's record.
 
         Returns:
             True if a record was deleted, False if not found.
         """
         conn = sqlite3.connect(self.db_path)
         try:
-            cursor = conn.execute(
-                "DELETE FROM ingestion_history WHERE file_hash = ?",
-                (file_hash,),
-            )
+            if collection is None:
+                cursor = conn.execute(
+                    "DELETE FROM ingestion_history WHERE file_hash = ?",
+                    (file_hash,),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM ingestion_history
+                    WHERE file_hash = ? AND collection = ?
+                    """,
+                    (file_hash, collection),
+                )
             conn.commit()
             return cursor.rowcount > 0
         except sqlite3.Error as e:

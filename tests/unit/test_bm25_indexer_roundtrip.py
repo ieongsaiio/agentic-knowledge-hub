@@ -341,6 +341,30 @@ class TestIndexPersistence:
 
 class TestRebuildFunctionality:
     """Test rebuild and update scenarios."""
+
+    def test_add_documents_replaces_document_prefixed_postings(self, tmp_path):
+        """Re-ingestion removes every old chunk that starts with doc_id."""
+        indexer = BM25Indexer(index_dir=str(tmp_path))
+        doc_id = "doc_abc123"
+        old_stats = [{
+            "chunk_id": f"{doc_id}_11111111_0000_aaaaaaaa",
+            "term_frequencies": {"old": 1},
+            "doc_length": 1,
+        }]
+        new_stats = [{
+            "chunk_id": f"{doc_id}_11111111_0000_bbbbbbbb",
+            "term_frequencies": {"new": 1},
+            "doc_length": 1,
+        }]
+
+        indexer.add_documents(old_stats, collection="test", doc_id=doc_id)
+        indexer.add_documents(new_stats, collection="test", doc_id=doc_id)
+
+        assert indexer.query(["old"], top_k=10) == []
+        results = indexer.query(["new"], top_k=10)
+        assert [item["chunk_id"] for item in results] == [
+            f"{doc_id}_11111111_0000_bbbbbbbb"
+        ]
     
     def test_rebuild_replaces_old_index(self, tmp_path):
         """Test that rebuild completely replaces old index."""

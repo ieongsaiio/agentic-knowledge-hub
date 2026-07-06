@@ -294,6 +294,15 @@ class TestDocumentManagerDelete:
         assert result.integrity_removed is True
         assert result.success is True
         assert result.errors == []
+        source_hash = mgr.integrity.compute_sha256.return_value
+        mgr.bm25.remove_document.assert_called_once_with(
+            f"doc_{source_hash[:16]}",
+            "default",
+        )
+        mgr.integrity.remove_record.assert_called_once_with(
+            source_hash,
+            "default",
+        )
 
     def test_delete_partial_failure(self, tmp_path):
         test_file = tmp_path / "test.pdf"

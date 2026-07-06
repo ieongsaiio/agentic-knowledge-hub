@@ -115,6 +115,10 @@ class TestPipelineProgressCallback:
         fp = _make_fake_pipeline()
         result = IngestionPipeline.run(fp, "test.pdf", on_progress=None)
         assert result.success
+        fp.integrity_checker.should_skip.assert_called_once_with(
+            "hash123",
+            "test",
+        )
 
     def test_callback_with_trace(self) -> None:
         """on_progress + trace both work together."""

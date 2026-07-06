@@ -88,8 +88,9 @@ def test_chunk_id_format(upserter_with_mock_store, sample_chunk):
     
     chunk_id = upserter._generate_chunk_id(sample_chunk)
     
-    # Format: {source_hash}_{index:04d}_{content_hash}
-    parts = chunk_id.split("_")
+    # Format: {doc_id}_{source_hash}_{index:04d}_{content_hash}
+    assert chunk_id.startswith("doc_abc123_")
+    parts = chunk_id.removeprefix("doc_abc123_").split("_")
     
     assert len(parts) == 3, "Chunk ID must have 3 parts"
     assert len(parts[0]) == 8, "Source hash must be 8 characters"
@@ -110,8 +111,10 @@ def test_chunk_id_changes_with_content(upserter_with_mock_store, sample_chunk):
     assert id1 != id2, "Different content must produce different IDs"
     
     # But source hash and index should remain same
-    assert id1.split("_")[0] == id2.split("_")[0], "Source hash should be same"
-    assert id1.split("_")[1] == id2.split("_")[1], "Index should be same"
+    suffix1 = id1.removeprefix("doc_abc123_").split("_")
+    suffix2 = id2.removeprefix("doc_abc123_").split("_")
+    assert suffix1[0] == suffix2[0], "Source hash should be same"
+    assert suffix1[1] == suffix2[1], "Index should be same"
 
 
 def test_chunk_id_changes_with_index(upserter_with_mock_store, sample_chunk):
@@ -125,8 +128,10 @@ def test_chunk_id_changes_with_index(upserter_with_mock_store, sample_chunk):
     id2 = upserter._generate_chunk_id(sample_chunk)
     
     assert id1 != id2, "Different index must produce different IDs"
-    assert id1.split("_")[1] == "0000", "First ID should have index 0000"
-    assert id2.split("_")[1] == "0005", "Second ID should have index 0005"
+    suffix1 = id1.removeprefix("doc_abc123_").split("_")
+    suffix2 = id2.removeprefix("doc_abc123_").split("_")
+    assert suffix1[1] == "0000", "First ID should have index 0000"
+    assert suffix2[1] == "0005", "Second ID should have index 0005"
 
 
 def test_chunk_id_changes_with_source_path(upserter_with_mock_store, sample_chunk):
@@ -140,7 +145,9 @@ def test_chunk_id_changes_with_source_path(upserter_with_mock_store, sample_chun
     id2 = upserter._generate_chunk_id(sample_chunk)
     
     assert id1 != id2, "Different source path must produce different IDs"
-    assert id1.split("_")[0] != id2.split("_")[0], "Source hash should be different"
+    suffix1 = id1.removeprefix("doc_abc123_").split("_")
+    suffix2 = id2.removeprefix("doc_abc123_").split("_")
+    assert suffix1[0] != suffix2[0], "Source hash should be different"
 
 
 def test_chunk_id_generation_missing_source_path(upserter_with_mock_store):
@@ -167,6 +174,19 @@ def test_chunk_id_generation_missing_chunk_index(upserter_with_mock_store):
     )
     
     with pytest.raises(ValueError, match="chunk_index"):
+        upserter._generate_chunk_id(chunk)
+
+
+def test_chunk_id_generation_missing_document_id(upserter_with_mock_store):
+    """A parent document ID is required for document-scoped cleanup."""
+    upserter, _ = upserter_with_mock_store
+    chunk = Chunk(
+        id="temp",
+        text="Test",
+        metadata={"source_path": "test.pdf", "chunk_index": 0},
+    )
+
+    with pytest.raises(ValueError, match="source_ref"):
         upserter._generate_chunk_id(chunk)
 
 
@@ -203,7 +223,11 @@ def test_upsert_multiple_chunks(upserter_with_mock_store):
         Chunk(
             id=f"temp{i}",
             text=f"Chunk {i}",
-            metadata={"source_path": "test.pdf", "chunk_index": i},
+            metadata={
+                "source_path": "test.pdf",
+                "chunk_index": i,
+                "source_ref": "doc_batch",
+            },
         )
         for i in range(5)
     ]
@@ -313,8 +337,8 @@ def test_upsert_batch_single_batch(upserter_with_mock_store):
     upserter, mock_store = upserter_with_mock_store
     
     chunks = [
-        Chunk(id="t1", text="C1", metadata={"source_path": "test.pdf", "chunk_index": 0}),
-        Chunk(id="t2", text="C2", metadata={"source_path": "test.pdf", "chunk_index": 1}),
+        Chunk(id="t1", text="C1", metadata={"source_path": "test.pdf", "chunk_index": 0, "source_ref": "doc_batch"}),
+        Chunk(id="t2", text="C2", metadata={"source_path": "test.pdf", "chunk_index": 1, "source_ref": "doc_batch"}),
     ]
     vectors = [[0.1, 0.2], [0.3, 0.4]]
     
@@ -331,15 +355,15 @@ def test_upsert_batch_multiple_batches(upserter_with_mock_store):
     
     batch1 = (
         [
-            Chunk(id="t1", text="C1", metadata={"source_path": "test.pdf", "chunk_index": 0}),
-            Chunk(id="t2", text="C2", metadata={"source_path": "test.pdf", "chunk_index": 1}),
+            Chunk(id="t1", text="C1", metadata={"source_path": "test.pdf", "chunk_index": 0, "source_ref": "doc_batch"}),
+            Chunk(id="t2", text="C2", metadata={"source_path": "test.pdf", "chunk_index": 1, "source_ref": "doc_batch"}),
         ],
         [[0.1, 0.2], [0.3, 0.4]],
     )
     
     batch2 = (
         [
-            Chunk(id="t3", text="C3", metadata={"source_path": "test.pdf", "chunk_index": 2}),
+            Chunk(id="t3", text="C3", metadata={"source_path": "test.pdf", "chunk_index": 2, "source_ref": "doc_batch"}),
         ],
         [[0.5, 0.6]],
     )
@@ -374,7 +398,7 @@ def test_chunk_with_unicode_text(upserter_with_mock_store):
     chunk = Chunk(
         id="temp",
         text="测试中文 🚀 émojis αβγ",
-        metadata={"source_path": "test.pdf", "chunk_index": 0},
+        metadata={"source_path": "test.pdf", "chunk_index": 0, "source_ref": "doc_unicode"},
     )
     
     chunk_id = upserter._generate_chunk_id(chunk)
@@ -392,7 +416,7 @@ def test_chunk_with_long_source_path(upserter_with_mock_store):
     chunk = Chunk(
         id="temp",
         text="Test",
-        metadata={"source_path": long_path, "chunk_index": 0},
+        metadata={"source_path": long_path, "chunk_index": 0, "source_ref": "doc_long"},
     )
     
     chunk_id = upserter._generate_chunk_id(chunk)
@@ -408,7 +432,7 @@ def test_chunk_with_large_index(upserter_with_mock_store):
     chunk = Chunk(
         id="temp",
         text="Test",
-        metadata={"source_path": "test.pdf", "chunk_index": 9999},
+        metadata={"source_path": "test.pdf", "chunk_index": 9999, "source_ref": "doc_large"},
     )
     
     chunk_id = upserter._generate_chunk_id(chunk)

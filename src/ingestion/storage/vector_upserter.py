@@ -29,9 +29,10 @@ class VectorUpserter:
     generates stable chunk IDs, and writes them to the configured vector store.
     
     Chunk ID Format:
-        {source_path_hash}_{chunk_index:04d}_{content_hash}
+        {doc_id}_{source_path_hash}_{chunk_index:04d}_{content_hash}
         
         Where:
+        - doc_id = parent document identifier from source_ref
         - source_path_hash = first 8 chars of SHA256(source_path)
         - chunk_index = zero-padded 4-digit index
         - content_hash = first 8 chars of SHA256(chunk.text)
@@ -51,7 +52,8 @@ class VectorUpserter:
         >>> vectors = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
         >>> 
         >>> upserter.upsert(chunks, vectors)
-        >>> # Chunks written with stable IDs like: "a1b2c3d4_0000_e5f6g7h8"
+        >>> # Chunks written with IDs like:
+        >>> # "doc_abc123_a1b2c3d4_0000_e5f6g7h8"
     """
     
     def __init__(self, settings: Settings, collection_name: Optional[str] = None):
@@ -154,6 +156,12 @@ class VectorUpserter:
             raise ValueError("Chunk metadata must contain 'source_path'")
         if "chunk_index" not in chunk.metadata:
             raise ValueError("Chunk metadata must contain 'chunk_index'")
+
+        doc_id = chunk.source_ref or chunk.metadata.get("source_ref")
+        if not isinstance(doc_id, str) or not doc_id:
+            raise ValueError(
+                "Chunk must contain a parent document ID in source_ref"
+            )
         
         source_path = chunk.metadata["source_path"]
         chunk_index = chunk.metadata["chunk_index"]
@@ -162,8 +170,11 @@ class VectorUpserter:
         source_hash = hashlib.sha256(source_path.encode("utf-8")).hexdigest()[:8]
         content_hash = hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()[:8]
         
-        # Format: {source_hash}_{index:04d}_{content_hash}
-        chunk_id = f"{source_hash}_{chunk_index:04d}_{content_hash}"
+        # The doc_id prefix lets BM25 remove every posting for a re-ingested
+        # document without needing a separate document-to-chunk mapping.
+        chunk_id = (
+            f"{doc_id}_{source_hash}_{chunk_index:04d}_{content_hash}"
+        )
         
         return chunk_id
     

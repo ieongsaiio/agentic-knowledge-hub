@@ -154,6 +154,63 @@ class TestSQLiteIntegrityChecker:
             assert result[0] == collection
         finally:
             conn.close()
+
+    def test_same_file_is_tracked_independently_per_collection(
+        self,
+        checker,
+        temp_file,
+    ):
+        """The idempotency scope is the file hash plus collection."""
+        file_hash = checker.compute_sha256(temp_file)
+
+        checker.mark_success(file_hash, temp_file, collection="alpha")
+
+        assert checker.should_skip(file_hash, "alpha") is True
+        assert checker.should_skip(file_hash, "beta") is False
+
+        checker.mark_success(file_hash, temp_file, collection="beta")
+
+        assert checker.should_skip(file_hash, "alpha") is True
+        assert checker.should_skip(file_hash, "beta") is True
+        assert len(checker.list_processed()) == 2
+
+    def test_legacy_schema_is_migrated_to_collection_scoped_key(
+        self,
+        temp_db,
+    ):
+        """Existing file-hash-only databases are migrated without data loss."""
+        conn = sqlite3.connect(temp_db)
+        conn.execute("""
+            CREATE TABLE ingestion_history (
+                file_hash TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                collection TEXT,
+                error_msg TEXT,
+                processed_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            INSERT INTO ingestion_history VALUES (
+                'hash1',
+                '/a.pdf',
+                'success',
+                'alpha',
+                NULL,
+                '2026-01-01T00:00:00+00:00',
+                '2026-01-01T00:00:00+00:00'
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        checker = SQLiteIntegrityChecker(temp_db)
+
+        assert checker.should_skip("hash1", "alpha") is True
+        assert checker.should_skip("hash1", "beta") is False
+        checker.mark_success("hash1", "/a.pdf", collection="beta")
+        assert len(checker.list_processed()) == 2
     
     def test_mark_success_idempotent(self, checker, temp_file):
         """Test that marking success multiple times is safe."""
