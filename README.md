@@ -107,6 +107,21 @@ conda activate mini-agent
 pip install -e ".[dev]"
 ```
 
+`mini-agent` 是 Conda 环境名，不绑定项目目录，因此可以在任意路径执行
+`conda activate mini-agent` 或 `conda run -n mini-agent ...`。不过，本项目默认配置、
+数据目录和日志目录使用相对路径；从其他目录启动时，应通过绝对路径运行脚本并显式
+指定配置文件，或像 MCP Client 配置一样将 `cwd` 设置为本项目根目录：
+
+```powershell
+conda run -n mini-agent python C:\path\to\agentic-knowledge-hub\scripts\query.py `
+  --config C:\path\to\agentic-knowledge-hub\config\settings.yaml `
+  --query "What does the document say about revenue?" `
+  --collection knowledge_hub
+```
+
+如果执行过 `pip install -e ".[dev]"`，Python Package 会以 Editable Mode 安装；
+但为了让相对配置和持久化目录保持一致，启动 MCP Server 时仍建议保留 `cwd`。
+
 ### 2. 准备配置
 
 ```powershell
@@ -192,6 +207,12 @@ MCP Client 配置示例：
 MCP Server 只提供知识检索工具，不直接生成最终答案。Copilot、Claude Desktop 或上层 Agent 会把 Tool Result 作为上下文，再生成面向用户的回答。
 
 ## FinanceBench 评估
+
+本项目的金融问答评估适配自 Patronus AI 发布的
+[FinanceBench 官方 GitHub 仓库](https://github.com/patronus-ai/financebench)，
+基准设计与数据说明可参考
+[FinanceBench 论文](https://arxiv.org/abs/2311.11944)。本项目仅下载和转换其公开数据，
+不将 Benchmark 原始 PDF、JSONL 或生成的索引提交到仓库。
 
 Benchmark 数据保存在本地 `data/benchmarks/`，不会上传 GitHub。先根据配置准备数据：
 
