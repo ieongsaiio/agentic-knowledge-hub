@@ -6,9 +6,7 @@
 
 ## 设计理念
 
-### 实战驱动学习（Learn by Doing）
-
-项目架构本身就是 RAG 面试题的“活体答案”。经典知识点被落实为可以运行、测试和替换的工程模块，通过真实数据摄取、查询追踪和基准评估来理解：
+项目架构被落实为可以运行、测试和替换的工程模块，通过真实数据摄取、查询追踪和基准评估来理解：
 
 - PDF 解析、页码映射、Token/Character Chunking 与 Chunk Refinement
 - Dense Retrieval、BM25、Weighted RRF 与 Metadata Filter
