@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -56,6 +57,22 @@ class FailingEvaluator(BaseEvaluator):
         raise RuntimeError("I always fail")
 
 
+class EmptyRejectingEvaluator(BaseEvaluator):
+    """Evaluator that rejects empty retrieved chunks."""
+
+    def evaluate(
+        self,
+        query: str,
+        retrieved_chunks: List[Any],
+        generated_answer: Optional[str] = None,
+        ground_truth: Optional[Any] = None,
+        trace: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> Dict[str, float]:
+        self.validate_retrieved_chunks(retrieved_chunks)
+        return {"unused": 1.0}
+
+
 class TestCompositeEvaluatorInit:
     """Tests for CompositeEvaluator initialisation."""
 
@@ -93,9 +110,7 @@ class TestCompositeEvaluatorEvaluate:
         }
 
     def test_partial_failure_returns_successful_metrics(self) -> None:
-        composite = CompositeEvaluator(
-            evaluators=[FakeEvaluatorA(), FailingEvaluator()]
-        )
+        composite = CompositeEvaluator(evaluators=[FakeEvaluatorA(), FailingEvaluator()])
 
         metrics = composite.evaluate(
             query="test",
@@ -118,9 +133,7 @@ class TestCompositeEvaluatorEvaluate:
             def evaluate(self, query, retrieved_chunks, **kwargs):
                 return {"hit_rate": 0.99}
 
-        composite = CompositeEvaluator(
-            evaluators=[FakeEvaluatorA(), EvalOverride()]
-        )
+        composite = CompositeEvaluator(evaluators=[FakeEvaluatorA(), EvalOverride()])
 
         metrics = composite.evaluate(query="test", retrieved_chunks=[{"id": "c1"}])
 
@@ -133,11 +146,12 @@ class TestCompositeEvaluatorEvaluate:
         with pytest.raises(ValueError, match="Query cannot be empty"):
             composite.evaluate(query="  ", retrieved_chunks=[{"id": "c1"}])
 
-    def test_validate_empty_chunks_raises(self) -> None:
-        composite = CompositeEvaluator(evaluators=[FakeEvaluatorA()])
+    def test_empty_chunks_preserve_metrics_and_isolate_rejecting_child(self) -> None:
+        composite = CompositeEvaluator(evaluators=[FakeEvaluatorA(), EmptyRejectingEvaluator()])
 
-        with pytest.raises(ValueError, match="retrieved_chunks cannot be empty"):
-            composite.evaluate(query="test", retrieved_chunks=[])
+        metrics = composite.evaluate(query="test", retrieved_chunks=[])
+
+        assert metrics == {"hit_rate": 1.0, "mrr": 0.5}
 
 
 class TestCompositeEvaluatorFactory:
@@ -171,3 +185,32 @@ class TestCompositeEvaluatorFactory:
             ground_truth=["c1"],
         )
         assert "hit_rate" in metrics
+
+    def test_backend_override_preserves_real_llm_settings(self) -> None:
+        from src.libs.evaluator.evaluator_factory import EvaluatorFactory
+
+        llm_settings = object()
+        evaluation = SimpleNamespace(
+            enabled=True,
+            provider="composite",
+            metrics=["document_hit_rate@5"],
+            backends=["benchmark"],
+        )
+        settings = SimpleNamespace(
+            evaluation=evaluation,
+            llm=llm_settings,
+        )
+        captured = []
+
+        def create(sub_settings, **kwargs):
+            captured.append(sub_settings)
+            return FakeEvaluatorA()
+
+        with patch.object(EvaluatorFactory, "create", side_effect=create):
+            composite = CompositeEvaluator(settings=settings)
+
+        assert len(composite.evaluators) == 1
+        assert captured[0].llm is llm_settings
+        assert captured[0].evaluation.provider == "benchmark"
+        assert captured[0].evaluation.enabled is True
+        assert captured[0].evaluation.backends == []

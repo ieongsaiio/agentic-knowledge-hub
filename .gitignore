@@ -90,15 +90,18 @@ dmypy.json
 # Ruff
 .ruff_cache/
 
-# Project-specific
+# Project-specific runtime data
 data/
+tmp/
 cache/
 logs/
 *.log
 traces.jsonl
+benchmark_history_comparison.csv
 
 # Local notes and generated documentation
 *.md
+!/README.md
 
 # Local/private agent skills
 .agents/

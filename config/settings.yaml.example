@@ -42,10 +42,14 @@ vector_store:
   collection_name: ""
 
 retrieval:
+  enable_dense: ""
+  enable_sparse: ""
   dense_top_k: ""
   sparse_top_k: ""
   fusion_top_k: ""
   rrf_k: ""
+  dense_weight: ""
+  sparse_weight: ""
 
 rerank:
   enabled: ""
@@ -61,8 +65,27 @@ rerank:
 evaluation:
   enabled: ""
   provider: ""
+  backends:
+    - ""
+  benchmark:
+    provider: ""
+    source_url: ""
+    data_dir: ""
+    split: ""
+    auto_download: ""
+    sample_size: ""
+    seed: ""
   metrics:
     - ""
+  experiments:
+    - name: ""
+      enabled: ""
+      overrides: {}
+  output:
+    directory: ""
+    save_per_query: ""
+    formats:
+      - ""
 
 observability:
   log_level: ""
@@ -71,9 +94,11 @@ observability:
   structured_logging: ""
 
 ingestion:
+  splitter: ""
+  length_unit: ""
+  tokenizer_model: ""
   chunk_size: ""
   chunk_overlap: ""
-  splitter: ""
   batch_size: ""
   chunk_refiner:
     use_llm: ""

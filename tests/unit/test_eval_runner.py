@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
@@ -12,13 +12,12 @@ import pytest
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator
 from src.observability.evaluation.eval_runner import (
-    EvalRunner,
     EvalReport,
+    EvalRunner,
     GoldenTestCase,
     QueryResult,
     load_test_set,
 )
-
 
 # ── Fixtures / Helpers ────────────────────────────────────────────
 
@@ -166,6 +165,60 @@ class TestEvalRunner:
 
         assert "Generated answer for: Q" == report.query_results[0].generated_answer
 
+    def test_retrieval_only_metrics_skip_answer_generation(self, tmp_path: Path) -> None:
+        f = tmp_path / "g.json"
+        _write_golden_json(f, [{"query": "Q"}])
+        generator = MagicMock(return_value="unused")
+        settings = SimpleNamespace(
+            evaluation=SimpleNamespace(
+                provider="composite",
+                backends=["benchmark"],
+                metrics=[
+                    "document_hit_rate@5",
+                    "page_hit_rate@5",
+                    "evidence_hit_rate@5",
+                    "evidence_mrr@5",
+                ],
+            )
+        )
+        runner = EvalRunner(
+            settings=settings,
+            evaluator=StubEvaluator(),
+            answer_generator=generator,
+        )
+
+        report = runner.run(f)
+
+        generator.assert_not_called()
+        assert report.query_results[0].generated_answer is None
+
+    def test_answer_metric_enables_answer_generation(self, tmp_path: Path) -> None:
+        f = tmp_path / "g.json"
+        _write_golden_json(f, [{"query": "Q"}])
+        calls = []
+
+        def generator(query, chunks):
+            calls.append((query, chunks))
+            return "Generated answer"
+
+        settings = SimpleNamespace(
+            evaluation=SimpleNamespace(
+                provider="benchmark",
+                backends=[],
+                metrics=["answer_token_f1"],
+            )
+        )
+        runner = EvalRunner(
+            settings=settings,
+            evaluator=StubEvaluator(),
+            answer_generator=generator,
+        )
+
+        report = runner.run(f)
+
+        assert calls == [("Q", [])]
+        assert report.query_results[0].generated_answer == "Generated answer"
+
     def test_report_to_dict(self, tmp_path: Path) -> None:
         f = tmp_path / "g.json"
         _write_golden_json(f, [{"query": "Q"}])
@@ -178,6 +231,33 @@ class TestEvalRunner:
         assert "query_results" in d
         assert d["query_count"] == 1
         assert d["evaluator_name"] == "StubEvaluator"
+
+    def test_run_cases_resumes_from_checkpoint(self, tmp_path: Path) -> None:
+        checkpoint = tmp_path / "checkpoint.jsonl"
+        cached = QueryResult(
+            query="Q1",
+            case_id="case-1",
+            metrics={"hit_rate": 0.25},
+            elapsed_ms=12.0,
+        )
+        checkpoint.write_text(
+            json.dumps({"case_key": "id:case-1", "result": cached.to_dict()}) + "\n",
+            encoding="utf-8",
+        )
+        evaluator = MagicMock(spec=BaseEvaluator)
+        evaluator.evaluate.return_value = {"hit_rate": 1.0}
+        runner = EvalRunner(evaluator=evaluator)
+        cases = [
+            GoldenTestCase(query="Q1", case_id="case-1"),
+            GoldenTestCase(query="Q2", case_id="case-2"),
+        ]
+
+        report = runner.run_cases(cases, checkpoint_path=checkpoint)
+
+        assert [result.case_id for result in report.query_results] == ["case-1", "case-2"]
+        assert report.query_results[0].metrics == {"hit_rate": 0.25}
+        evaluator.evaluate.assert_called_once()
+        assert len(checkpoint.read_text(encoding="utf-8").splitlines()) == 2
 
 
 class TestEvalRunnerAggregation:

@@ -165,7 +165,7 @@ class ProtocolHandler:
                 ],
                 isError=True,
             )
-        except Exception as e:
+        except Exception:
             # Internal error - don't leak stack trace
             self._logger.exception("Internal error executing tool %s", name)
             return types.CallToolResult(
@@ -198,11 +198,15 @@ def _register_default_tools(protocol_handler: ProtocolHandler) -> None:
     # Import and register query_knowledge_hub tool
     from src.mcp_server.tools.query_knowledge_hub import register_tool as register_query_tool
     register_query_tool(protocol_handler)
-    
+
     # Import and register list_collections tool
     from src.mcp_server.tools.list_collections import register_tool as register_list_tool
     register_list_tool(protocol_handler)
-    
+
+    # Import and register list_documents tool
+    from src.mcp_server.tools.list_documents import register_tool as register_documents_tool
+    register_documents_tool(protocol_handler)
+
     # Import and register get_document_summary tool
     from src.mcp_server.tools.get_document_summary import register_tool as register_summary_tool
     register_summary_tool(protocol_handler)
@@ -212,7 +216,7 @@ def create_mcp_server(
     server_name: str,
     server_version: str,
     protocol_handler: Optional[ProtocolHandler] = None,
-    register_tools: bool = True,
+    register_tools: Optional[bool] = None,
 ) -> Server:
     """Create and configure an MCP server with the protocol handler.
 
@@ -224,23 +228,26 @@ def create_mcp_server(
         server_version: Version string.
         protocol_handler: Optional pre-configured protocol handler.
             If None, a new one will be created.
-        register_tools: Whether to register default tools (default: True).
+        register_tools: Whether to register default tools. When omitted,
+            defaults are registered only for a handler created by this factory;
+            a caller-provided handler is preserved as-is.
 
     Returns:
         Configured Server instance ready to run.
     """
-    if protocol_handler is None:
+    created_handler = protocol_handler is None
+    if created_handler:
         protocol_handler = ProtocolHandler(
             server_name=server_name,
             server_version=server_version,
         )
 
-    # Register default tools if requested
-    if register_tools:
+    should_register_tools = created_handler if register_tools is None else register_tools
+    if should_register_tools:
         _register_default_tools(protocol_handler)
 
     # Create low-level server
-    server = Server(server_name)
+    server = Server(server_name, version=server_version)
 
     # Register tools/list handler
     @server.list_tools()

@@ -18,13 +18,22 @@ if TYPE_CHECKING:
 def _get_ragas_evaluator() -> type[BaseEvaluator]:
     """Lazy import RagasEvaluator to avoid hard dependency on ragas."""
     from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
     return RagasEvaluator
 
 
 def _get_composite_evaluator() -> type[BaseEvaluator]:
     """Lazy import CompositeEvaluator."""
     from src.observability.evaluation.composite_evaluator import CompositeEvaluator
+
     return CompositeEvaluator
+
+
+def _get_benchmark_evaluator() -> type[BaseEvaluator]:
+    """Lazy import BenchmarkEvaluator."""
+    from src.observability.evaluation.benchmark_evaluator import BenchmarkEvaluator
+
+    return BenchmarkEvaluator
 
 
 class EvaluatorFactory:
@@ -45,6 +54,7 @@ class EvaluatorFactory:
     _LAZY_PROVIDERS: dict[str, Any] = {
         "ragas": _get_ragas_evaluator,
         "composite": _get_composite_evaluator,
+        "benchmark": _get_benchmark_evaluator,
     }
 
     @classmethod
@@ -132,4 +142,4 @@ class EvaluatorFactory:
         Returns:
             Sorted list of available provider identifiers.
         """
-        return sorted(cls._PROVIDERS.keys())
+        return sorted(set(cls._PROVIDERS) | set(cls._LAZY_PROVIDERS))

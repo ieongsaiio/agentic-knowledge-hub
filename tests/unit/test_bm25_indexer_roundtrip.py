@@ -258,6 +258,44 @@ class TestBM25Querying:
 
 class TestIndexPersistence:
     """Test index save/load functionality."""
+
+    def test_save_retries_transient_permission_error(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Windows file locks are retried before failing the ingestion."""
+        indexer = BM25Indexer(index_dir=str(tmp_path))
+        original_replace = os.replace
+        calls = 0
+
+        def flaky_replace(source, destination):
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise PermissionError("temporarily locked")
+            original_replace(source, destination)
+
+        monkeypatch.setattr(
+            "src.ingestion.storage.bm25_indexer.os.replace",
+            flaky_replace,
+        )
+        monkeypatch.setattr(
+            "src.ingestion.storage.bm25_indexer.time.sleep",
+            lambda _: None,
+        )
+
+        indexer.build(
+            [{
+                "chunk_id": "doc1",
+                "term_frequencies": {"hello": 1},
+                "doc_length": 1,
+            }],
+            collection="test",
+        )
+
+        assert calls == 3
+        assert (tmp_path / "test_bm25.json").is_file()
     
     def test_save_and_load_roundtrip(self, tmp_path):
         """Test that saved index can be loaded and produces same results."""

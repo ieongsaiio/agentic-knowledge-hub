@@ -75,8 +75,16 @@ class HybridSearchConfig:
     fusion_top_k: int = 10
     enable_dense: bool = True
     enable_sparse: bool = True
+    dense_weight: float = 0.5
+    sparse_weight: float = 0.5
     parallel_retrieval: bool = True
     metadata_filter_post: bool = True
+
+    def __post_init__(self) -> None:
+        if self.dense_weight < 0 or self.sparse_weight < 0:
+            raise ValueError("retrieval weights must be non-negative")
+        if self.dense_weight == 0 and self.sparse_weight == 0:
+            raise ValueError("at least one retrieval weight must be greater than zero")
 
 
 @dataclass
@@ -194,8 +202,10 @@ class HybridSearch:
             dense_top_k=getattr(retrieval_config, 'dense_top_k', 20),
             sparse_top_k=getattr(retrieval_config, 'sparse_top_k', 20),
             fusion_top_k=getattr(retrieval_config, 'fusion_top_k', 10),
-            enable_dense=True,
-            enable_sparse=True,
+            enable_dense=getattr(retrieval_config, 'enable_dense', True),
+            enable_sparse=getattr(retrieval_config, 'enable_sparse', True),
+            dense_weight=getattr(retrieval_config, 'dense_weight', 0.5),
+            sparse_weight=getattr(retrieval_config, 'sparse_weight', 0.5),
             parallel_retrieval=True,
             metadata_filter_post=True,
         )
@@ -617,15 +627,19 @@ class HybridSearch:
             return ranking_lists[0][:top_k]
         
         _t0 = time.monotonic()
-        fused = self.fusion.fuse(
+        weights = [self.config.dense_weight, self.config.sparse_weight]
+        fused = self.fusion.fuse_with_weights(
             ranking_lists=ranking_lists,
+            weights=weights,
             top_k=top_k,
             trace=trace,
         )
         _elapsed = (time.monotonic() - _t0) * 1000.0
         if trace is not None:
             trace.record_stage("fusion", {
-                "method": "rrf",
+                "method": "weighted_rrf",
+                "dense_weight": self.config.dense_weight,
+                "sparse_weight": self.config.sparse_weight,
                 "input_lists": len(ranking_lists),
                 "top_k": top_k,
                 "result_count": len(fused),

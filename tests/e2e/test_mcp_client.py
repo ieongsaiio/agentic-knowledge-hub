@@ -59,10 +59,12 @@ def _send_jsonrpc(
     expected_responses: int,
     timeout: float = 15.0,
 ) -> List[Dict[str, Any]]:
-    """Send JSON-RPC messages and collect the expected number of responses.
+    """Send JSON-RPC messages sequentially and collect their responses.
 
     Uses a background thread to read stdout so that the ``timeout`` is
-    always respected even when ``readline()`` blocks.
+    always respected even when ``readline()`` blocks.  Requests carrying
+    an ``id`` are awaited before the next message is sent, matching the MCP
+    lifecycle used by real clients.
 
     Args:
         proc: Subprocess with stdin/stdout pipes.
@@ -75,10 +77,6 @@ def _send_jsonrpc(
     """
     assert proc.stdin is not None
     assert proc.stdout is not None
-
-    for msg in messages:
-        proc.stdin.write(json.dumps(msg) + "\n")
-        proc.stdin.flush()
 
     responses: List[Dict[str, Any]] = []
     stop_event = threading.Event()
@@ -102,10 +100,24 @@ def _send_jsonrpc(
     reader_thread = threading.Thread(target=_reader, daemon=True)
     reader_thread.start()
 
-    # Wait until we have enough responses *or* timeout expires
+    for msg in messages:
+        proc.stdin.write(json.dumps(msg) + "\n")
+        proc.stdin.flush()
+
+        request_id = msg.get("id")
+        if request_id is None:
+            continue
+
+        deadline = time.time() + timeout
+        while _find(responses, request_id) is None and time.time() < deadline:
+            time.sleep(0.05)
+
+        if _find(responses, request_id) is None:
+            break
+
     deadline = time.time() + timeout
     while len(responses) < expected_responses and time.time() < deadline:
-        time.sleep(0.1)
+        time.sleep(0.05)
 
     stop_event.set()
     return responses
@@ -168,7 +180,7 @@ class TestMCPClientE2E:
 
     @pytest.mark.e2e
     def test_initialize_and_tools_list(self, mcp_server: subprocess.Popen) -> None:
-        """Server responds to initialize and tools/list with all 3 registered tools."""
+        """Server responds to initialize and tools/list with all registered tools."""
         messages = [
             INIT_REQUEST,
             INITIALIZED_NOTIFICATION,
@@ -200,6 +212,7 @@ class TestMCPClientE2E:
         tool_names = {t["name"] for t in tools}
         assert "query_knowledge_hub" in tool_names
         assert "list_collections" in tool_names
+        assert "list_documents" in tool_names
         assert "get_document_summary" in tool_names
 
         # Each tool must declare a valid inputSchema
@@ -306,7 +319,46 @@ class TestMCPClientE2E:
         assert isinstance(first.get("text", ""), str)
 
     # ------------------------------------------------------------------
-    # 4. tools/call – get_document_summary (non-existent doc → graceful)
+    # 4. tools/call – list_documents
+    # ------------------------------------------------------------------
+
+    @pytest.mark.e2e
+    def test_tools_call_list_documents(
+        self, mcp_server: subprocess.Popen
+    ) -> None:
+        """list_documents returns readable text and machine-readable JSON."""
+        messages = [
+            INIT_REQUEST,
+            INITIALIZED_NOTIFICATION,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "list_documents",
+                    "arguments": {"collection": "default"},
+                },
+            },
+        ]
+
+        responses = _send_jsonrpc(
+            mcp_server,
+            messages,
+            expected_responses=2,
+            timeout=15.0,
+        )
+
+        call_resp = _find(responses, 2)
+        assert call_resp is not None, f"Missing tools/call response. Got: {responses}"
+        assert "result" in call_resp
+        result = call_resp["result"]
+        assert result.get("isError") is not True
+        assert len(result["content"]) == 2
+        assert "No documents found" in result["content"][0]["text"]
+        assert "Documents (JSON)" in result["content"][1]["text"]
+
+    # ------------------------------------------------------------------
+    # 5. tools/call – get_document_summary (non-existent doc → graceful)
     # ------------------------------------------------------------------
 
     @pytest.mark.e2e

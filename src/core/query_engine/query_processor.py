@@ -17,8 +17,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Pattern, Set
 
-import jieba
-
+from src.core.tokenization import tokenize_mixed_text
 from src.core.types import ProcessedQuery
 
 
@@ -220,21 +219,7 @@ class QueryProcessor:
         Returns:
             List of tokens
         """
-        tokens: List[str] = []
-
-        # Use jieba to segment (handles Chinese + keeps English intact)
-        raw_tokens = jieba.lcut(text)
-
-        for token in raw_tokens:
-            token = token.strip()
-            if not token:
-                continue
-            # Skip pure punctuation / whitespace
-            if re.fullmatch(r'[\s\W]+', token, re.UNICODE):
-                continue
-            tokens.append(token)
-        
-        return tokens
+        return tokenize_mixed_text(text)
     
     def _filter_keywords(self, tokens: List[str]) -> List[str]:
         """Filter tokens to get meaningful keywords.

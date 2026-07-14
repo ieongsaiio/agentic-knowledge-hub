@@ -5,21 +5,23 @@ real upsert→query roundtrip cycles, ensuring data persistence and retrieval
 correctness.
 """
 
-import tempfile
+import gc
 from pathlib import Path
 from typing import Dict, List
 
 import pytest
+from chromadb.api.shared_system_client import SharedSystemClient
 
 from src.core.settings import Settings
 from src.libs.vector_store.chroma_store import ChromaStore
 
 
 @pytest.fixture
-def temp_chroma_dir():
+def temp_chroma_dir(tmp_path):
     """Create a temporary directory for ChromaDB storage."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield tmpdir
+    yield str(tmp_path)
+    SharedSystemClient.clear_system_cache()
+    gc.collect()
 
 
 @pytest.fixture

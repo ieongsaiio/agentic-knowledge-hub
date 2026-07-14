@@ -104,10 +104,21 @@ class TestEvaluatorFactory:
         EvaluatorFactory.register_provider("beta", BetaEvaluator)
         EvaluatorFactory.register_provider("alpha", AlphaEvaluator)
 
-        assert EvaluatorFactory.list_providers() == ["alpha", "beta", "custom"]
+        providers = EvaluatorFactory.list_providers()
+
+        assert providers == sorted(providers)
+        assert {
+            "alpha",
+            "benchmark",
+            "beta",
+            "composite",
+            "custom",
+            "ragas",
+        } <= set(providers)
 
 
 # ── Boundary / Contract tests (I4) ──────────────────────────────────
+
 
 class TestCustomEvaluatorBoundary:
     """Boundary tests for CustomEvaluator."""

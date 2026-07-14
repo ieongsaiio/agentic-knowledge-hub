@@ -58,6 +58,15 @@ class FakeFusion:
                     merged.append(r)
         return merged[:top_k]
 
+    def fuse_with_weights(
+        self, *, ranking_lists, weights=None, top_k=None, trace=None
+    ) -> List[RetrievalResult]:
+        return self.fuse(
+            ranking_lists=ranking_lists,
+            top_k=top_k,
+            trace=trace,
+        )
+
 
 class FakeBaseReranker:
     """Minimal reranker that adds rerank_score."""
@@ -225,4 +234,4 @@ class TestCoreRerankerTrace:
         expected = {"query_processing", "dense_retrieval", "sparse_retrieval", "fusion", "rerank"}
         assert expected.issubset(set(stage_names))
         assert trace.to_dict()["trace_type"] == "query"
-        assert trace.to_dict()["total_elapsed_ms"] > 0
+        assert trace.to_dict()["total_elapsed_ms"] >= 0

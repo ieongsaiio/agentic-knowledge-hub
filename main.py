@@ -15,7 +15,7 @@ from src.observability.logger import get_logger
 def main() -> int:
     """
     Main entry point for the MCP Server.
-    
+
     Returns:
         int: Exit code (0 for success, non-zero for failure)
     """

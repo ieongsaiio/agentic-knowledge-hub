@@ -14,6 +14,8 @@ Design Principles:
 from __future__ import annotations
 
 import logging
+import importlib.util
+import sys
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator
@@ -29,13 +31,16 @@ SUPPORTED_METRICS = {FAITHFULNESS, ANSWER_RELEVANCY, CONTEXT_PRECISION}
 
 
 def _import_ragas() -> None:
-    """Validate that ragas is importable, raising a clear error if not."""
+    """Validate that Ragas is installed without importing its full stack."""
     try:
-        import ragas  # noqa: F401
-    except ImportError as exc:
+        if sys.modules.get("ragas", object()) is None:
+            raise ImportError("ragas is explicitly unavailable")
+        if importlib.util.find_spec("ragas") is None:
+            raise ImportError("ragas package was not found")
+    except (ImportError, ValueError) as exc:
         raise ImportError(
             "The 'ragas' package is required for RagasEvaluator. "
-            "Install it with: pip install ragas datasets"
+            "Install it with: pip install 'ragas>=0.4' datasets"
         ) from exc
 
 

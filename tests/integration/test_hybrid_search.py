@@ -177,6 +177,35 @@ def rrf_fusion() -> RRFFusion:
 
 class TestHybridSearchBasic:
     """Test basic HybridSearch functionality."""
+
+    def test_applies_dense_and_sparse_rrf_weights(
+        self,
+        query_processor: QueryProcessor,
+        rrf_fusion: RRFFusion,
+    ) -> None:
+        dense_result = RetrievalResult(
+            chunk_id="dense_only", score=0.9, text="dense", metadata={}
+        )
+        sparse_result = RetrievalResult(
+            chunk_id="sparse_only", score=9.0, text="sparse", metadata={}
+        )
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=MockDenseRetriever([dense_result]),
+            sparse_retriever=MockSparseRetriever([sparse_result]),
+            fusion=rrf_fusion,
+            config=HybridSearchConfig(
+                dense_weight=0.7,
+                sparse_weight=0.3,
+                parallel_retrieval=False,
+            ),
+        )
+
+        results = hybrid.search("revenue", top_k=2)
+
+        assert [result.chunk_id for result in results] == ["dense_only", "sparse_only"]
+        assert results[0].score == pytest.approx(0.7 / 61)
+        assert results[1].score == pytest.approx(0.3 / 61)
     
     def test_init_with_all_components(
         self,
@@ -634,6 +663,29 @@ class TestHybridSearchConfig:
         assert dense.call_count == 1
         assert sparse.call_count == 1
         assert len(results) > 0
+
+    def test_sparse_retrieval_can_be_disabled(
+        self,
+        query_processor: QueryProcessor,
+        rrf_fusion: RRFFusion,
+        sample_dense_results: List[RetrievalResult],
+        sample_sparse_results: List[RetrievalResult],
+    ):
+        dense = MockDenseRetriever(results=sample_dense_results)
+        sparse = MockSparseRetriever(results=sample_sparse_results)
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense,
+            sparse_retriever=sparse,
+            fusion=rrf_fusion,
+            config=HybridSearchConfig(enable_dense=True, enable_sparse=False),
+        )
+
+        results = hybrid.search("Azure", top_k=5)
+
+        assert dense.call_count == 1
+        assert sparse.call_count == 0
+        assert results == sample_dense_results[:5]
 
 
 # =============================================================================

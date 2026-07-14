@@ -13,17 +13,19 @@ Design Principles:
 
 from __future__ import annotations
 
+import ast
 import base64
+import json
 import logging
 import re
-from dataclasses import dataclass, field
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from mcp import types
 
 from src.core.types import RetrievalResult
-
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,7 @@ IMAGE_PLACEHOLDER_PATTERN = re.compile(r"\[IMAGE:\s*([^\]]+)\]")
 @dataclass
 class ImageReference:
     """Reference to an image within a chunk.
-    
+
     Attributes:
         image_id: Unique identifier for the image
         file_path: Filesystem path to the image file
@@ -71,7 +73,7 @@ class ImageReference:
     text_offset: Optional[int] = None
     text_length: Optional[int] = None
     caption: Optional[str] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -87,7 +89,7 @@ class ImageReference:
 @dataclass
 class ImageContent:
     """Loaded image content ready for MCP response.
-    
+
     Attributes:
         image_id: Unique identifier for the image
         data: Base64-encoded image data
@@ -98,10 +100,10 @@ class ImageContent:
     data: str  # base64 encoded
     mime_type: str
     caption: Optional[str] = None
-    
+
     def to_mcp_content(self) -> types.ImageContent:
         """Convert to MCP ImageContent block.
-        
+
         Returns:
             MCP ImageContent object for protocol response.
         """
@@ -110,7 +112,7 @@ class ImageContent:
             data=self.data,
             mimeType=self.mime_type,
         )
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -123,24 +125,24 @@ class ImageContent:
 
 class MultimodalAssembler:
     """Assembles multimodal content from retrieval results.
-    
+
     This class extracts image references from chunk metadata,
     loads image files, and builds MCP-compliant content blocks
     combining text and images.
-    
+
     Example:
         >>> assembler = MultimodalAssembler()
         >>> results = [RetrievalResult(chunk_id="doc1_001", ...)]
         >>> content_blocks = assembler.assemble(results)
         >>> # Returns list of TextContent and ImageContent blocks
-    
+
     Args:
         image_storage: Optional ImageStorage instance for path lookup.
             If None, uses file paths directly from metadata.
         max_images_per_result: Maximum images to include per result (default: 5).
         include_captions: Whether to include image captions as text (default: True).
     """
-    
+
     def __init__(
         self,
         image_storage: Optional[Any] = None,
@@ -148,7 +150,7 @@ class MultimodalAssembler:
         include_captions: bool = True,
     ) -> None:
         """Initialize MultimodalAssembler.
-        
+
         Args:
             image_storage: Optional ImageStorage for resolving image paths.
             max_images_per_result: Max images to include per retrieval result.
@@ -157,47 +159,45 @@ class MultimodalAssembler:
         self._image_storage = image_storage
         self.max_images_per_result = max_images_per_result
         self.include_captions = include_captions
-    
+
     def extract_image_refs(
         self,
         result: RetrievalResult,
     ) -> List[ImageReference]:
         """Extract image references from a retrieval result.
-        
+
         Looks for image references in:
         1. metadata.images list (structured image info)
         2. [IMAGE: id] placeholders in text (fallback)
-        
+
         Args:
             result: RetrievalResult containing chunk data.
-            
+
         Returns:
             List of ImageReference objects found in the result.
         """
         refs: List[ImageReference] = []
         metadata = result.metadata or {}
-        
+
         # Primary source: structured images list in metadata
-        images_list = metadata.get("images", [])
-        if isinstance(images_list, list):
-            for img_info in images_list[:self.max_images_per_result]:
-                if isinstance(img_info, dict) and "id" in img_info:
-                    ref = ImageReference(
-                        image_id=img_info["id"],
-                        file_path=img_info.get("path"),
-                        page=img_info.get("page"),
-                        text_offset=img_info.get("text_offset"),
-                        text_length=img_info.get("text_length"),
-                    )
-                    refs.append(ref)
-        
+        images_list = self._normalize_images(metadata.get("images", []))
+        for img_info in images_list[:self.max_images_per_result]:
+            if "id" in img_info:
+                ref = ImageReference(
+                    image_id=str(img_info["id"]),
+                    file_path=img_info.get("path"),
+                    page=img_info.get("page"),
+                    text_offset=img_info.get("text_offset"),
+                    text_length=img_info.get("text_length"),
+                )
+                refs.append(ref)
+
         # Add captions if available
-        captions = metadata.get("image_captions", {})
-        if isinstance(captions, dict):
-            for ref in refs:
-                if ref.image_id in captions:
-                    ref.caption = captions[ref.image_id]
-        
+        captions = self._normalize_captions(metadata.get("image_captions", {}))
+        for ref in refs:
+            if ref.image_id in captions:
+                ref.caption = captions[ref.image_id]
+
         # Fallback: parse placeholders from text if no structured refs
         if not refs and result.text:
             placeholders = IMAGE_PLACEHOLDER_PATTERN.findall(result.text)
@@ -205,23 +205,73 @@ class MultimodalAssembler:
                 image_id = image_id.strip()
                 ref = ImageReference(
                     image_id=image_id,
-                    caption=captions.get(image_id) if isinstance(captions, dict) else None,
+                    caption=captions.get(image_id),
                 )
                 refs.append(ref)
-        
+
         return refs
-    
+
+    @staticmethod
+    def _decode_structured_metadata(value: Any) -> Any:
+        """Decode JSON metadata and legacy Python repr strings."""
+        if not isinstance(value, str):
+            return value
+
+        stripped = value.strip()
+        if not stripped:
+            return None
+
+        try:
+            return json.loads(stripped)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        try:
+            return ast.literal_eval(stripped)
+        except (ValueError, SyntaxError):
+            return None
+
+    @classmethod
+    def _normalize_images(cls, value: Any) -> List[Dict[str, Any]]:
+        decoded = cls._decode_structured_metadata(value)
+        if isinstance(decoded, dict):
+            return [decoded]
+        if isinstance(decoded, (list, tuple)):
+            return [item for item in decoded if isinstance(item, dict)]
+        return []
+
+    @classmethod
+    def _normalize_captions(cls, value: Any) -> Dict[str, str]:
+        decoded = cls._decode_structured_metadata(value)
+        if isinstance(decoded, dict):
+            if "id" in decoded and "caption" in decoded:
+                return {str(decoded["id"]): str(decoded["caption"])}
+            return {
+                str(image_id): str(caption)
+                for image_id, caption in decoded.items()
+                if caption is not None
+            }
+        if isinstance(decoded, (list, tuple)):
+            return {
+                str(item["id"]): str(item["caption"])
+                for item in decoded
+                if isinstance(item, dict)
+                and "id" in item
+                and item.get("caption") is not None
+            }
+        return {}
+
     def resolve_image_path(
         self,
         ref: ImageReference,
         collection: Optional[str] = None,
     ) -> Optional[str]:
         """Resolve the filesystem path for an image reference.
-        
+
         Args:
             ref: ImageReference to resolve.
             collection: Optional collection name for path construction.
-            
+
         Returns:
             Absolute file path if found, None otherwise.
         """
@@ -230,7 +280,7 @@ class MultimodalAssembler:
             path = Path(ref.file_path)
             if path.exists():
                 return str(path.resolve())
-        
+
         # Try ImageStorage lookup
         if self._image_storage is not None:
             try:
@@ -239,26 +289,81 @@ class MultimodalAssembler:
                     return path
             except Exception as e:
                 logger.warning(f"ImageStorage lookup failed for {ref.image_id}: {e}")
-        
-        # Convention-based path: data/images/{collection}/{image_id}.png
+
+        # Resolve through the persistent image index used by ingestion.
+        indexed_path = self._lookup_image_index(ref.image_id, collection)
+        if indexed_path:
+            return indexed_path
+
+        # Convention-based paths, including the doc-hash subdirectory used
+        # by PDF ingestion: data/images/{collection}/{doc_hash}/{image_id}.png.
         if collection:
             from src.core.settings import resolve_path
+            collection_root = resolve_path(f"data/images/{collection}")
             for ext in [".png", ".jpg", ".jpeg", ".webp"]:
-                candidate = resolve_path(f"data/images/{collection}/{ref.image_id}{ext}")
+                candidate = collection_root / f"{ref.image_id}{ext}"
                 if candidate.exists():
                     return str(candidate.resolve())
-        
+                nested_matches = list(collection_root.glob(f"*/{ref.image_id}{ext}"))
+                if nested_matches:
+                    return str(nested_matches[0].resolve())
+
         return None
-    
+
+    @staticmethod
+    def _lookup_image_index(
+        image_id: str,
+        collection: Optional[str],
+    ) -> Optional[str]:
+        from src.core.settings import resolve_path
+
+        db_path = resolve_path("data/db/image_index.db")
+        if not db_path.exists():
+            return None
+
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                if collection:
+                    row = conn.execute(
+                        """
+                        SELECT file_path
+                        FROM image_index
+                        WHERE image_id = ? AND collection = ?
+                        LIMIT 1
+                        """,
+                        (image_id, collection),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        """
+                        SELECT file_path
+                        FROM image_index
+                        WHERE image_id = ?
+                        LIMIT 1
+                        """,
+                        (image_id,),
+                    ).fetchone()
+        except sqlite3.Error as exc:
+            logger.warning("Image index lookup failed for %s: %s", image_id, exc)
+            return None
+
+        if not row or not row[0]:
+            return None
+
+        candidate = Path(row[0])
+        if not candidate.is_absolute():
+            candidate = resolve_path(str(candidate))
+        return str(candidate.resolve()) if candidate.exists() else None
+
     def load_image(
         self,
         file_path: str,
     ) -> Optional[ImageContent]:
         """Load and encode an image file.
-        
+
         Args:
             file_path: Path to the image file.
-            
+
         Returns:
             ImageContent with base64 data and MIME type, or None on failure.
         """
@@ -267,40 +372,40 @@ class MultimodalAssembler:
             if not path.exists():
                 logger.warning(f"Image file not found: {file_path}")
                 return None
-            
+
             # Read file content
             data = path.read_bytes()
             if not data:
                 logger.warning(f"Empty image file: {file_path}")
                 return None
-            
+
             # Detect MIME type
             mime_type = self._detect_mime_type(path, data)
-            
+
             # Encode to base64
             base64_data = base64.b64encode(data).decode("utf-8")
-            
+
             return ImageContent(
                 image_id=path.stem,
                 data=base64_data,
                 mime_type=mime_type,
             )
-            
+
         except Exception as e:
             logger.error(f"Failed to load image {file_path}: {e}")
             return None
-    
+
     def _detect_mime_type(
         self,
         path: Path,
         data: bytes,
     ) -> str:
         """Detect MIME type from file extension or magic bytes.
-        
+
         Args:
             path: File path for extension detection.
             data: File content for magic byte detection.
-            
+
         Returns:
             MIME type string (defaults to "image/png" if unknown).
         """
@@ -308,35 +413,35 @@ class MultimodalAssembler:
         suffix = path.suffix.lower()
         if suffix in MIME_TYPE_MAP:
             return MIME_TYPE_MAP[suffix]
-        
+
         # Fallback to magic bytes
         for magic, mime_type in MAGIC_BYTES.items():
             if data.startswith(magic):
                 return mime_type
-        
+
         # Default to PNG
         logger.debug(f"Unknown image format for {path}, defaulting to image/png")
         return "image/png"
-    
+
     def assemble_for_result(
         self,
         result: RetrievalResult,
         collection: Optional[str] = None,
     ) -> List[Union[types.TextContent, types.ImageContent]]:
         """Assemble multimodal content blocks for a single result.
-        
+
         Args:
             result: RetrievalResult to process.
             collection: Optional collection name for path resolution.
-            
+
         Returns:
             List of MCP content blocks (TextContent and ImageContent).
         """
         blocks: List[Union[types.TextContent, types.ImageContent]] = []
-        
+
         # Extract image references
         refs = self.extract_image_refs(result)
-        
+
         # Load and add images
         for ref in refs:
             # Resolve path
@@ -344,46 +449,46 @@ class MultimodalAssembler:
             if not file_path:
                 logger.debug(f"Could not resolve path for image: {ref.image_id}")
                 continue
-            
+
             # Load image
             image_content = self.load_image(file_path)
             if image_content is None:
                 continue
-            
+
             # Update with reference info
             image_content.image_id = ref.image_id
             image_content.caption = ref.caption
-            
+
             # Add image block
             blocks.append(image_content.to_mcp_content())
-            
+
             # Add caption as text if enabled
             if self.include_captions and ref.caption:
                 caption_text = f"**Image Caption ({ref.image_id}):** {ref.caption}"
                 blocks.append(types.TextContent(type="text", text=caption_text))
-        
+
         return blocks
-    
+
     def assemble(
         self,
         results: List[RetrievalResult],
         collection: Optional[str] = None,
     ) -> List[Union[types.TextContent, types.ImageContent]]:
         """Assemble multimodal content blocks for multiple results.
-        
+
         Args:
             results: List of RetrievalResult to process.
             collection: Optional collection name for path resolution.
-            
+
         Returns:
             List of all MCP content blocks from all results.
         """
         all_blocks: List[Union[types.TextContent, types.ImageContent]] = []
         seen_image_ids: set = set()
-        
+
         for result in results:
             blocks = self.assemble_for_result(result, collection)
-            
+
             # Deduplicate images across results
             for block in blocks:
                 if isinstance(block, types.ImageContent):
@@ -393,29 +498,29 @@ class MultimodalAssembler:
                     if data_hash in seen_image_ids:
                         continue
                     seen_image_ids.add(data_hash)
-                
+
                 all_blocks.append(block)
-        
+
         return all_blocks
-    
+
     def has_images(self, result: RetrievalResult) -> bool:
         """Check if a result contains image references.
-        
+
         Args:
             result: RetrievalResult to check.
-            
+
         Returns:
             True if result has image references, False otherwise.
         """
         refs = self.extract_image_refs(result)
         return len(refs) > 0
-    
+
     def count_images(self, results: List[RetrievalResult]) -> int:
         """Count total images across all results.
-        
+
         Args:
             results: List of RetrievalResult to count.
-            
+
         Returns:
             Total number of image references found.
         """

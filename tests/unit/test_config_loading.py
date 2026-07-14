@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -65,11 +65,98 @@ def test_load_settings_success(tmp_path: Path) -> None:
     assert settings.embedding.dimensions == 1536
     assert settings.vector_store.collection_name == "knowledge_hub"
     assert settings.retrieval.rrf_k == 60
+    assert settings.retrieval.enable_dense is True
+    assert settings.retrieval.enable_sparse is True
+    assert settings.retrieval.dense_weight == 0.5
+    assert settings.retrieval.sparse_weight == 0.5
     assert settings.rerank.provider == "none"
     assert settings.rerank.api_args == {}
     assert settings.evaluation.metrics == ["hit_rate", "mrr"]
     assert settings.observability.log_level == "INFO"
     assert settings.ingestion is not None
+    assert settings.ingestion.length_unit == "characters"
+    assert settings.ingestion.tokenizer_model is None
+
+
+def test_load_settings_retrieval_weights(tmp_path: Path) -> None:
+    config = """
+    llm: {provider: openai, model: gpt-4o-mini, temperature: 0.0, max_tokens: 1024}
+    embedding: {provider: openai, model: text-embedding-3-small, dimensions: 1536}
+    vector_store: {provider: chroma, persist_directory: ./data/db/chroma, collection_name: test}
+    retrieval:
+      dense_top_k: 20
+      sparse_top_k: 20
+      fusion_top_k: 10
+      rrf_k: 60
+      dense_weight: 0.7
+      sparse_weight: 0.3
+    rerank: {enabled: false, provider: none, model: "", top_k: 5}
+    evaluation: {enabled: false, provider: custom, metrics: [hit_rate]}
+    observability: {log_level: INFO, trace_enabled: false, trace_file: ./logs/test.jsonl, structured_logging: true}
+    ingestion: {splitter: recursive, chunk_size: 1000, chunk_overlap: 200, batch_size: 100}
+    """
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(settings_path, config)
+
+    settings = load_settings(settings_path)
+
+    assert settings.retrieval.dense_weight == 0.7
+    assert settings.retrieval.sparse_weight == 0.3
+
+
+def test_load_settings_token_based_ingestion(tmp_path: Path) -> None:
+    config = """
+    llm:
+      provider: openai
+      model: gpt-4o-mini
+      temperature: 0.0
+      max_tokens: 1024
+    embedding:
+      provider: siliconflow
+      model: Qwen/Qwen3-Embedding-0.6B
+      dimensions: 1024
+    vector_store:
+      provider: chroma
+      persist_directory: ./data/db/chroma
+      collection_name: knowledge_hub
+    retrieval:
+      dense_top_k: 20
+      sparse_top_k: 20
+      fusion_top_k: 10
+      rrf_k: 60
+    rerank:
+      enabled: false
+      provider: none
+      model: ""
+      top_k: 5
+    evaluation:
+      enabled: false
+      provider: custom
+      metrics:
+        - hit_rate
+    observability:
+      log_level: INFO
+      trace_enabled: true
+      trace_file: ./logs/traces.jsonl
+      structured_logging: true
+    ingestion:
+      splitter: recursive
+      length_unit: tokens
+      tokenizer_model: Qwen/Qwen3-Embedding-0.6B
+      chunk_size: 512
+      chunk_overlap: 80
+      batch_size: 100
+    """
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(settings_path, config)
+
+    settings = load_settings(settings_path)
+
+    assert settings.ingestion is not None
+    assert settings.ingestion.length_unit == "tokens"
+    assert settings.ingestion.tokenizer_model == "Qwen/Qwen3-Embedding-0.6B"
+    assert settings.ingestion.chunk_size == 512
+    assert settings.ingestion.chunk_overlap == 80
 
 
 def test_load_settings_rerank_api_args(tmp_path: Path) -> None:

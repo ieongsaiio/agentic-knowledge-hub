@@ -28,6 +28,7 @@ from src.observability.logger import get_logger
 # Libs layer imports
 from src.libs.loader.file_integrity import SQLiteIntegrityChecker
 from src.libs.loader.pdf_loader import PdfLoader
+from src.libs.loader.parsed_document_cache import ParsedDocumentCache
 from src.libs.embedding.embedding_factory import EmbeddingFactory
 from src.libs.vector_store.vector_store_factory import VectorStoreFactory
 
@@ -142,11 +143,26 @@ class IngestionPipeline:
         logger.info("  ✓ FileIntegrityChecker initialized")
         
         # Stage 2: Loader
+        vision_settings = getattr(settings, "vision_llm", None)
+        self.image_processing_enabled = bool(
+            vision_settings is not None and getattr(vision_settings, "enabled", False)
+        )
         self.loader = PdfLoader(
-            extract_images=True,
+            extract_images=self.image_processing_enabled,
             image_storage_dir=str(resolve_path(f"data/images/{collection}"))
         )
-        logger.info("  ✓ PdfLoader initialized")
+        logger.info(
+            "  ✓ PdfLoader initialized "
+            f"(extract_images={self.image_processing_enabled})"
+        )
+        self.parsed_document_cache = None
+        if not self.image_processing_enabled:
+            self.parsed_document_cache = ParsedDocumentCache(
+                loader_config=self.loader.cache_config()
+            )
+            logger.info(
+                "  ✓ ParsedDocumentCache initialized (dir=data/cache/parsed_documents)"
+            )
         
         # Stage 3: Chunker
         self.chunker = DocumentChunker(settings)
@@ -175,7 +191,8 @@ class IngestionPipeline:
         self.batch_processor = BatchProcessor(
             dense_encoder=self.dense_encoder,
             sparse_encoder=self.sparse_encoder,
-            batch_size=batch_size
+            batch_size=batch_size,
+            continue_on_error=False,
         )
         logger.info(f"  ✓ BatchProcessor initialized (batch_size={batch_size})")
         
@@ -186,11 +203,15 @@ class IngestionPipeline:
         self.bm25_indexer = BM25Indexer(index_dir=str(resolve_path(f"data/db/bm25/{collection}")))
         logger.info("  ✓ BM25Indexer initialized")
         
-        self.image_storage = ImageStorage(
-            db_path=str(resolve_path("data/db/image_index.db")),
-            images_root=str(resolve_path("data/images"))
-        )
-        logger.info("  ✓ ImageStorage initialized")
+        self.image_storage = None
+        if self.image_processing_enabled:
+            self.image_storage = ImageStorage(
+                db_path=str(resolve_path("data/db/image_index.db")),
+                images_root=str(resolve_path("data/images"))
+            )
+            logger.info("  ✓ ImageStorage initialized")
+        else:
+            logger.info("  ✓ ImageStorage disabled (vision_llm.enabled=false)")
         
         logger.info("Pipeline initialization complete!")
     
@@ -258,7 +279,16 @@ class IngestionPipeline:
             _notify("load", 2)
             
             _t0 = time.monotonic()
-            document = self.loader.load(str(file_path))
+            parsed_cache = getattr(self, "parsed_document_cache", None)
+            document = None
+            cache_hit = False
+            if parsed_cache is not None:
+                document = parsed_cache.get(file_hash, source_path=file_path)
+                cache_hit = document is not None
+            if document is None:
+                document = self.loader.load(str(file_path))
+                if parsed_cache is not None:
+                    parsed_cache.put(file_hash, document)
             _elapsed = (time.monotonic() - _t0) * 1000.0
             
             text_preview = document.text[:200].replace('\n', ' ') + "..." if len(document.text) > 200 else document.text
@@ -272,7 +302,8 @@ class IngestionPipeline:
             stages["loading"] = {
                 "doc_id": document.id,
                 "text_length": len(document.text),
-                "image_count": image_count
+                "image_count": image_count,
+                "cache_hit": cache_hit,
             }
             if trace is not None:
                 trace.record_stage("load", {
@@ -280,6 +311,7 @@ class IngestionPipeline:
                     "doc_id": document.id,
                     "text_length": len(document.text),
                     "image_count": image_count,
+                    "cache_hit": cache_hit,
                     "text_preview": document.text,
                 }, elapsed_ms=_elapsed)
             
@@ -342,10 +374,15 @@ class IngestionPipeline:
             logger.info(f"      LLM enriched: {enriched_by_llm}, Rule enriched: {enriched_by_rule}")
             
             # 4c: Image Captioning
-            logger.info("  4c. Image Captioning...")
-            chunks = self.image_captioner.transform(chunks, trace)
-            captioned = sum(1 for c in chunks if c.metadata.get("image_captions"))
-            logger.info(f"      Chunks with captions: {captioned}")
+            image_processing_enabled = getattr(self, "image_processing_enabled", True)
+            if image_processing_enabled:
+                logger.info("  4c. Image Captioning...")
+                chunks = self.image_captioner.transform(chunks, trace)
+                captioned = sum(1 for c in chunks if c.metadata.get("image_captions"))
+                logger.info(f"      Chunks with captions: {captioned}")
+            else:
+                captioned = 0
+                logger.info("  4c. Image Captioning skipped (vision_llm.enabled=false)")
             
             stages["transform"] = {
                 "chunk_refiner": {"llm": refined_by_llm, "rule": refined_by_rule},
@@ -456,21 +493,26 @@ class IngestionPipeline:
             )
             logger.info(f"      Index built for {len(sparse_stats)} documents")
             
-            # 6c: Register images in image storage index
-            # Note: Images are already saved by PdfLoader, we just need to index them
-            logger.info("  6c. Image Storage Index...")
             images = document.metadata.get("images", [])
-            for img in images:
-                img_path = Path(img["path"])
-                if img_path.exists():
-                    self.image_storage.register_image(
-                        image_id=img["id"],
-                        file_path=img_path,
-                        collection=self.collection,
-                        doc_hash=file_hash,
-                        page_num=img.get("page", 0)
-                    )
-            logger.info(f"      Indexed {len(images)} images")
+            image_processing_enabled = getattr(self, "image_processing_enabled", True)
+            if image_processing_enabled and self.image_storage is not None:
+                # 6c: Register images in image storage index
+                # Note: Images are already saved by PdfLoader, we just need to index them
+                logger.info("  6c. Image Storage Index...")
+                for img in images:
+                    img_path = Path(img["path"])
+                    if img_path.exists():
+                        self.image_storage.register_image(
+                            image_id=img["id"],
+                            file_path=img_path,
+                            collection=self.collection,
+                            doc_hash=file_hash,
+                            page_num=img.get("page", 0)
+                        )
+                logger.info(f"      Indexed {len(images)} images")
+            else:
+                images = []
+                logger.info("  6c. Image Storage Index skipped (vision_llm.enabled=false)")
             
             stages["storage"] = {
                 "vector_count": len(vector_ids),
@@ -500,6 +542,7 @@ class IngestionPipeline:
                     for img in images
                 ]
                 trace.record_stage("upsert", {
+                    "method": "chroma+bm25+image_storage",
                     "dense_store": {
                         "backend": "ChromaDB",
                         "collection": self.collection,
@@ -561,7 +604,8 @@ class IngestionPipeline:
     
     def close(self) -> None:
         """Clean up resources."""
-        self.image_storage.close()
+        if self.image_storage is not None:
+            self.image_storage.close()
 
 
 def run_pipeline(

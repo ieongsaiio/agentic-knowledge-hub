@@ -82,6 +82,7 @@ class BatchProcessor:
         dense_encoder: DenseEncoder,
         sparse_encoder: SparseEncoder,
         batch_size: int = 100,
+        continue_on_error: bool = True,
     ):
         """Initialize BatchProcessor.
         
@@ -99,6 +100,7 @@ class BatchProcessor:
         self.dense_encoder = dense_encoder
         self.sparse_encoder = sparse_encoder
         self.batch_size = batch_size
+        self.continue_on_error = continue_on_error
     
     def process(
         self,
@@ -135,7 +137,7 @@ class BatchProcessor:
         if not chunks:
             raise ValueError("Cannot process empty chunks list")
         
-        start_time = time.time()
+        start_time = time.perf_counter()
         
         # Create batches
         batches = self._create_batches(chunks)
@@ -148,7 +150,7 @@ class BatchProcessor:
         failed_chunks = 0
         
         for batch_idx, batch in enumerate(batches):
-            batch_start = time.time()
+            batch_start = time.perf_counter()
             
             try:
                 # Dense encoding
@@ -169,8 +171,13 @@ class BatchProcessor:
                         f"batch_{batch_idx}_error",
                         {"error": str(e), "batch_size": len(batch)}
                     )
+                if not self.continue_on_error:
+                    raise RuntimeError(
+                        f"Batch {batch_idx} failed while processing chunks "
+                        f"{batch[0].id if batch else '<empty>'}..."
+                    ) from e
             
-            batch_duration = time.time() - batch_start
+            batch_duration = time.perf_counter() - batch_start
             
             # Record batch timing if trace available
             if trace:
@@ -183,7 +190,9 @@ class BatchProcessor:
                     }
                 )
         
-        total_time = time.time() - start_time
+        total_time = time.perf_counter() - start_time
+        if total_time <= 0:
+            total_time = 1e-9
         
         # Record overall processing statistics
         if trace:

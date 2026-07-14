@@ -10,12 +10,10 @@ Design Principles:
 - Clear Contracts: Well-defined output structure for downstream BM25Indexer
 """
 
-from typing import List, Dict, Optional, Any
 from collections import Counter
-import re
+from typing import Any, Dict, List, Optional
 
-import jieba
-
+from src.core.tokenization import tokenize_mixed_text
 from src.core.types import Chunk
 
 
@@ -144,20 +142,7 @@ class SparseEncoder:
         Returns:
             List of valid terms
         """
-        tokens: List[str] = []
-
-        # Use jieba to segment the text (handles both Chinese and English)
-        raw_tokens = jieba.lcut(text)
-
-        # Clean tokens: keep only alphanumeric and Chinese characters
-        for token in raw_tokens:
-            token = token.strip()
-            if not token:
-                continue
-            # Skip pure punctuation / whitespace
-            if re.fullmatch(r'[\s\W]+', token, re.UNICODE):
-                continue
-            tokens.append(token)
+        tokens = tokenize_mixed_text(text)
         
         # Apply lowercase if configured
         if self.lowercase:

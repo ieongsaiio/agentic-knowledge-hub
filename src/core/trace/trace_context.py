@@ -108,7 +108,7 @@ class TraceContext:
             "trace_type": self.trace_type,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
-            "total_elapsed_ms": round(self.elapsed_ms(), 2),
+            "total_elapsed_ms": round(self.elapsed_ms(), 3),
             "stages": list(self.stages),
             "metadata": dict(self.metadata),
         }

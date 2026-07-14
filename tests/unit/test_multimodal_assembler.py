@@ -13,7 +13,6 @@ from __future__ import annotations
 import base64
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,7 +27,6 @@ from src.core.response.multimodal_assembler import (
     MultimodalAssembler,
 )
 from src.core.types import RetrievalResult
-
 
 # =============================================================================
 # Fixtures
@@ -60,11 +58,11 @@ def temp_image_dir(sample_png_bytes) -> Path:
     with tempfile.TemporaryDirectory() as tmpdir:
         img_dir = Path(tmpdir) / "images" / "test_collection"
         img_dir.mkdir(parents=True)
-        
+
         # Create test images
         (img_dir / "img001.png").write_bytes(sample_png_bytes)
         (img_dir / "img002.jpg").write_bytes(b"\xff\xd8\xff" + b"\x00" * 100)
-        
+
         yield img_dir
 
 
@@ -127,17 +125,17 @@ def result_without_images() -> RetrievalResult:
 
 class TestImageReference:
     """Tests for ImageReference dataclass."""
-    
+
     def test_create_basic_reference(self):
         """Test creating a basic image reference."""
         ref = ImageReference(image_id="img001")
-        
+
         assert ref.image_id == "img001"
         assert ref.file_path is None
         assert ref.page is None
         assert ref.text_offset is None
         assert ref.caption is None
-    
+
     def test_create_full_reference(self):
         """Test creating a fully populated reference."""
         ref = ImageReference(
@@ -148,14 +146,14 @@ class TestImageReference:
             text_length=15,
             caption="Test caption",
         )
-        
+
         assert ref.image_id == "img001"
         assert ref.file_path == "/path/to/img001.png"
         assert ref.page == 5
         assert ref.text_offset == 100
         assert ref.text_length == 15
         assert ref.caption == "Test caption"
-    
+
     def test_to_dict(self):
         """Test serialization to dictionary."""
         ref = ImageReference(
@@ -164,9 +162,9 @@ class TestImageReference:
             page=1,
             caption="Caption text",
         )
-        
+
         data = ref.to_dict()
-        
+
         assert data["image_id"] == "img001"
         assert data["file_path"] == "/path/to/img.png"
         assert data["page"] == 1
@@ -180,7 +178,7 @@ class TestImageReference:
 
 class TestImageContent:
     """Tests for ImageContent dataclass."""
-    
+
     def test_create_image_content(self):
         """Test creating image content."""
         content = ImageContent(
@@ -188,12 +186,12 @@ class TestImageContent:
             data="base64data==",
             mime_type="image/png",
         )
-        
+
         assert content.image_id == "img001"
         assert content.data == "base64data=="
         assert content.mime_type == "image/png"
         assert content.caption is None
-    
+
     def test_to_mcp_content(self):
         """Test conversion to MCP ImageContent."""
         content = ImageContent(
@@ -201,14 +199,14 @@ class TestImageContent:
             data="iVBORw0KGgo=",
             mime_type="image/png",
         )
-        
+
         mcp_content = content.to_mcp_content()
-        
+
         assert isinstance(mcp_content, types.ImageContent)
         assert mcp_content.type == "image"
         assert mcp_content.data == "iVBORw0KGgo="
         assert mcp_content.mimeType == "image/png"
-    
+
     def test_to_dict(self):
         """Test serialization to dictionary."""
         content = ImageContent(
@@ -217,9 +215,9 @@ class TestImageContent:
             mime_type="image/jpeg",
             caption="A test image",
         )
-        
+
         data = content.to_dict()
-        
+
         assert data["image_id"] == "img001"
         assert data["data"] == "base64data"
         assert data["mime_type"] == "image/jpeg"
@@ -233,7 +231,7 @@ class TestImageContent:
 
 class TestMimeTypeDetection:
     """Tests for MIME type detection utilities."""
-    
+
     def test_mime_type_map_contains_common_formats(self):
         """Test that common image formats are in MIME type map."""
         assert ".png" in MIME_TYPE_MAP
@@ -242,24 +240,24 @@ class TestMimeTypeDetection:
         assert ".gif" in MIME_TYPE_MAP
         assert ".webp" in MIME_TYPE_MAP
         assert ".bmp" in MIME_TYPE_MAP
-    
+
     def test_mime_type_values(self):
         """Test correct MIME type values."""
         assert MIME_TYPE_MAP[".png"] == "image/png"
         assert MIME_TYPE_MAP[".jpg"] == "image/jpeg"
         assert MIME_TYPE_MAP[".jpeg"] == "image/jpeg"
         assert MIME_TYPE_MAP[".gif"] == "image/gif"
-    
+
     def test_magic_bytes_detection(self):
         """Test magic bytes are defined for common formats."""
         # PNG magic bytes
         assert b"\x89PNG\r\n\x1a\n" in MAGIC_BYTES
         assert MAGIC_BYTES[b"\x89PNG\r\n\x1a\n"] == "image/png"
-        
+
         # JPEG magic bytes
         assert b"\xff\xd8\xff" in MAGIC_BYTES
         assert MAGIC_BYTES[b"\xff\xd8\xff"] == "image/jpeg"
-        
+
         # GIF magic bytes
         assert b"GIF89a" in MAGIC_BYTES
         assert MAGIC_BYTES[b"GIF89a"] == "image/gif"
@@ -272,46 +270,46 @@ class TestMimeTypeDetection:
 
 class TestImagePlaceholderPattern:
     """Tests for image placeholder regex pattern."""
-    
+
     def test_match_simple_placeholder(self):
         """Test matching simple placeholder."""
         text = "Here is [IMAGE: img001] in text."
         matches = IMAGE_PLACEHOLDER_PATTERN.findall(text)
-        
+
         assert len(matches) == 1
         assert matches[0].strip() == "img001"
-    
+
     def test_match_multiple_placeholders(self):
         """Test matching multiple placeholders."""
         text = "[IMAGE: img001] and [IMAGE: img002] and [IMAGE: img003]"
         matches = IMAGE_PLACEHOLDER_PATTERN.findall(text)
-        
+
         assert len(matches) == 3
         assert "img001" in [m.strip() for m in matches]
         assert "img002" in [m.strip() for m in matches]
         assert "img003" in [m.strip() for m in matches]
-    
+
     def test_match_with_extra_spaces(self):
         """Test matching with extra whitespace."""
         text = "[IMAGE:   img001  ]"
         matches = IMAGE_PLACEHOLDER_PATTERN.findall(text)
-        
+
         assert len(matches) == 1
         assert matches[0].strip() == "img001"
-    
+
     def test_match_complex_image_id(self):
         """Test matching complex image IDs."""
         text = "[IMAGE: doc_abc123_p1_img0]"
         matches = IMAGE_PLACEHOLDER_PATTERN.findall(text)
-        
+
         assert len(matches) == 1
         assert matches[0].strip() == "doc_abc123_p1_img0"
-    
+
     def test_no_match_malformed(self):
         """Test no match for malformed placeholders."""
         text = "[IMG: img001] or [IMAGE img001] or IMAGE: img001"
         matches = IMAGE_PLACEHOLDER_PATTERN.findall(text)
-        
+
         assert len(matches) == 0
 
 
@@ -322,20 +320,20 @@ class TestImagePlaceholderPattern:
 
 class TestExtractImageRefs:
     """Tests for extract_image_refs method."""
-    
+
     def test_extract_from_metadata_images_list(self, assembler, result_with_images):
         """Test extracting refs from metadata.images list."""
         refs = assembler.extract_image_refs(result_with_images)
-        
+
         assert len(refs) == 2
         assert refs[0].image_id == "img001"
         assert refs[0].file_path == "/path/to/img001.png"
         assert refs[0].page == 1
         assert refs[0].caption == "A diagram showing system architecture"
-        
+
         assert refs[1].image_id == "img002"
         assert refs[1].caption == "Performance metrics chart"
-    
+
     def test_extract_from_text_placeholders(self, assembler):
         """Test fallback extraction from text placeholders."""
         result = RetrievalResult(
@@ -344,13 +342,13 @@ class TestExtractImageRefs:
             text="Content with [IMAGE: fallback_img001] and [IMAGE: fallback_img002].",
             metadata={"source_path": "test.pdf"},
         )
-        
+
         refs = assembler.extract_image_refs(result)
-        
+
         assert len(refs) == 2
         assert refs[0].image_id == "fallback_img001"
         assert refs[1].image_id == "fallback_img002"
-    
+
     def test_prefer_metadata_over_placeholders(self, assembler):
         """Test that metadata.images takes priority over text placeholders."""
         result = RetrievalResult(
@@ -362,22 +360,22 @@ class TestExtractImageRefs:
                 "images": [{"id": "metadata_img", "path": "/test.png"}],
             },
         )
-        
+
         refs = assembler.extract_image_refs(result)
-        
+
         assert len(refs) == 1
         assert refs[0].image_id == "metadata_img"
-    
+
     def test_extract_empty_result(self, assembler, result_without_images):
         """Test extraction from result without images."""
         refs = assembler.extract_image_refs(result_without_images)
-        
+
         assert len(refs) == 0
-    
+
     def test_max_images_limit(self):
         """Test that max_images_per_result is respected."""
         assembler = MultimodalAssembler(max_images_per_result=2)
-        
+
         result = RetrievalResult(
             chunk_id="test",
             score=0.9,
@@ -390,11 +388,11 @@ class TestExtractImageRefs:
                 ],
             },
         )
-        
+
         refs = assembler.extract_image_refs(result)
-        
+
         assert len(refs) == 2
-    
+
     def test_extract_with_captions(self, assembler):
         """Test that captions are attached to refs."""
         result = RetrievalResult(
@@ -407,12 +405,57 @@ class TestExtractImageRefs:
                 "image_captions": {"img1": "Test caption"},
             },
         )
-        
+
         refs = assembler.extract_image_refs(result)
-        
+
         assert len(refs) == 1
         assert refs[0].caption == "Test caption"
-    
+
+    def test_extract_from_json_serialized_metadata(self, assembler):
+        """Test structured image fields persisted as JSON strings."""
+        result = RetrievalResult(
+            chunk_id="test",
+            score=0.9,
+            text="[IMAGE: img1]",
+            metadata={
+                "source_path": "test.pdf",
+                "images": '[{"id":"img1","path":"images/img1.png","page":2}]',
+                "image_captions": '[{"id":"img1","caption":"JSON caption"}]',
+            },
+        )
+
+        refs = assembler.extract_image_refs(result)
+
+        assert len(refs) == 1
+        assert refs[0].image_id == "img1"
+        assert refs[0].file_path == "images/img1.png"
+        assert refs[0].page == 2
+        assert refs[0].caption == "JSON caption"
+
+    def test_extract_from_legacy_chroma_repr(self, assembler):
+        """Test metadata strings written by the previous Chroma serializer."""
+        result = RetrievalResult(
+            chunk_id="test",
+            score=0.9,
+            text="[IMAGE: img1] [IMAGE: img2]",
+            metadata={
+                "source_path": "test.pdf",
+                "images": (
+                    "{'id': 'img1', 'path': 'images/img1.png', 'page': 1},"
+                    "{'id': 'img2', 'path': 'images/img2.png', 'page': 2}"
+                ),
+                "image_captions": (
+                    "{'id': 'img1', 'caption': 'First caption'},"
+                    "{'id': 'img2', 'caption': 'Second caption'}"
+                ),
+            },
+        )
+
+        refs = assembler.extract_image_refs(result)
+
+        assert [ref.image_id for ref in refs] == ["img1", "img2"]
+        assert [ref.caption for ref in refs] == ["First caption", "Second caption"]
+
     def test_extract_with_malformed_images_list(self, assembler):
         """Test handling of malformed images list."""
         result = RetrievalResult(
@@ -428,9 +471,9 @@ class TestExtractImageRefs:
                 ],
             },
         )
-        
+
         refs = assembler.extract_image_refs(result)
-        
+
         assert len(refs) == 1
         assert refs[0].image_id == "valid_img"
 
@@ -442,31 +485,31 @@ class TestExtractImageRefs:
 
 class TestResolveImagePath:
     """Tests for resolve_image_path method."""
-    
+
     def test_resolve_with_explicit_path(self, assembler, temp_image_dir):
         """Test resolution using explicit file_path."""
         img_path = temp_image_dir / "img001.png"
         ref = ImageReference(image_id="img001", file_path=str(img_path))
-        
+
         resolved = assembler.resolve_image_path(ref)
-        
+
         assert resolved is not None
         assert Path(resolved).exists()
-    
+
     def test_resolve_with_image_storage(self, assembler):
         """Test resolution via ImageStorage lookup."""
         mock_storage = MagicMock()
         mock_storage.get_image_path.return_value = "/resolved/path/img.png"
-        
+
         assembler_with_storage = MultimodalAssembler(image_storage=mock_storage)
         ref = ImageReference(image_id="img001")
-        
+
         with patch("pathlib.Path.exists", return_value=True):
             resolved = assembler_with_storage.resolve_image_path(ref)
-        
+
         assert resolved == "/resolved/path/img.png"
         mock_storage.get_image_path.assert_called_once_with("img001")
-    
+
     def test_resolve_fallback_convention_path(self, temp_image_dir, sample_png_bytes):
         """Test fallback to convention-based path."""
         # Create image at convention path
@@ -474,42 +517,104 @@ class TestResolveImagePath:
         conv_dir = temp_image_dir.parent.parent / "data" / "images" / collection
         conv_dir.mkdir(parents=True, exist_ok=True)
         (conv_dir / "conv_img.png").write_bytes(sample_png_bytes)
-        
+
         assembler = MultimodalAssembler()
         ref = ImageReference(image_id="conv_img")
-        
+
         # Patch to use our temp directory
         with patch.object(Path, "exists") as mock_exists:
             mock_exists.return_value = True
             # This test is simplified - in real code would check actual path
             resolved = assembler.resolve_image_path(ref, collection=collection)
-        
+
         # Path should be attempted with collection
         # Actual resolution depends on filesystem state
-    
+
     def test_resolve_nonexistent_path(self, assembler):
         """Test resolution returns None for missing files."""
         ref = ImageReference(
             image_id="nonexistent",
             file_path="/definitely/not/a/real/path.png",
         )
-        
+
         resolved = assembler.resolve_image_path(ref)
-        
+
         assert resolved is None
-    
+
     def test_resolve_with_image_storage_failure(self):
         """Test graceful handling of ImageStorage errors."""
         mock_storage = MagicMock()
         mock_storage.get_image_path.side_effect = Exception("Storage error")
-        
+
         assembler = MultimodalAssembler(image_storage=mock_storage)
         ref = ImageReference(image_id="img001")
-        
+
         # Should not raise, should return None
         resolved = assembler.resolve_image_path(ref)
-        
+
         assert resolved is None
+
+    def test_resolve_nested_ingestion_path(self, tmp_path, sample_png_bytes):
+        """Test the doc-hash directory layout produced by PDF ingestion."""
+        image_path = (
+            tmp_path
+            / "data"
+            / "images"
+            / "contracts"
+            / "document_hash"
+            / "nested_img.png"
+        )
+        image_path.parent.mkdir(parents=True)
+        image_path.write_bytes(sample_png_bytes)
+
+        def fake_resolve_path(path):
+            return tmp_path / Path(path)
+
+        ref = ImageReference(image_id="nested_img")
+        with patch("src.core.settings.resolve_path", side_effect=fake_resolve_path):
+            resolved = MultimodalAssembler().resolve_image_path(
+                ref,
+                collection="contracts",
+            )
+
+        assert resolved == str(image_path.resolve())
+
+    def test_resolve_from_persistent_image_index(self, tmp_path, sample_png_bytes):
+        """Test resolving a placeholder-only reference through image_index.db."""
+        import sqlite3
+
+        image_path = tmp_path / "stored" / "indexed_img.png"
+        image_path.parent.mkdir(parents=True)
+        image_path.write_bytes(sample_png_bytes)
+
+        db_path = tmp_path / "data" / "db" / "image_index.db"
+        db_path.parent.mkdir(parents=True)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE image_index (
+                    image_id TEXT,
+                    file_path TEXT,
+                    collection TEXT
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO image_index VALUES (?, ?, ?)",
+                ("indexed_img", str(image_path), "contracts"),
+            )
+
+        def fake_resolve_path(path):
+            return tmp_path / Path(path)
+
+        ref = ImageReference(image_id="indexed_img")
+        with patch("src.core.settings.resolve_path", side_effect=fake_resolve_path):
+            resolved = MultimodalAssembler().resolve_image_path(
+                ref,
+                collection="contracts",
+            )
+
+        assert resolved == str(image_path.resolve())
 
 
 # =============================================================================
@@ -519,54 +624,54 @@ class TestResolveImagePath:
 
 class TestLoadImage:
     """Tests for load_image method."""
-    
+
     def test_load_png_image(self, assembler, temp_image_dir):
         """Test loading a PNG image."""
         img_path = str(temp_image_dir / "img001.png")
-        
+
         content = assembler.load_image(img_path)
-        
+
         assert content is not None
         assert content.mime_type == "image/png"
         assert content.data  # Non-empty base64
-        
+
         # Verify base64 is valid
         decoded = base64.b64decode(content.data)
         assert decoded.startswith(b"\x89PNG")
-    
+
     def test_load_jpeg_image(self, assembler, temp_image_dir):
         """Test loading a JPEG image."""
         img_path = str(temp_image_dir / "img002.jpg")
-        
+
         content = assembler.load_image(img_path)
-        
+
         assert content is not None
         assert content.mime_type == "image/jpeg"
-    
+
     def test_load_nonexistent_file(self, assembler):
         """Test loading returns None for missing file."""
         content = assembler.load_image("/nonexistent/path/image.png")
-        
+
         assert content is None
-    
+
     def test_load_empty_file(self, assembler):
         """Test loading returns None for empty file."""
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"")
             temp_path = f.name
-        
+
         try:
             content = assembler.load_image(temp_path)
             assert content is None
         finally:
             Path(temp_path).unlink()
-    
+
     def test_load_image_sets_correct_image_id(self, assembler, temp_image_dir):
         """Test that loaded image has correct ID from filename."""
         img_path = str(temp_image_dir / "img001.png")
-        
+
         content = assembler.load_image(img_path)
-        
+
         assert content is not None
         assert content.image_id == "img001"
 
@@ -578,37 +683,37 @@ class TestLoadImage:
 
 class TestDetectMimeType:
     """Tests for _detect_mime_type method."""
-    
+
     def test_detect_from_extension_png(self, assembler, sample_png_bytes):
         """Test MIME detection from .png extension."""
         mime = assembler._detect_mime_type(Path("test.png"), sample_png_bytes)
         assert mime == "image/png"
-    
+
     def test_detect_from_extension_jpg(self, assembler, sample_jpeg_bytes):
         """Test MIME detection from .jpg extension."""
         mime = assembler._detect_mime_type(Path("test.jpg"), sample_jpeg_bytes)
         assert mime == "image/jpeg"
-    
+
     def test_detect_from_extension_jpeg(self, assembler, sample_jpeg_bytes):
         """Test MIME detection from .jpeg extension."""
         mime = assembler._detect_mime_type(Path("test.jpeg"), sample_jpeg_bytes)
         assert mime == "image/jpeg"
-    
+
     def test_detect_from_magic_bytes_png(self, assembler, sample_png_bytes):
         """Test MIME detection from PNG magic bytes."""
         mime = assembler._detect_mime_type(Path("test.unknown"), sample_png_bytes)
         assert mime == "image/png"
-    
+
     def test_detect_from_magic_bytes_jpeg(self, assembler, sample_jpeg_bytes):
         """Test MIME detection from JPEG magic bytes."""
         mime = assembler._detect_mime_type(Path("test.unknown"), sample_jpeg_bytes)
         assert mime == "image/jpeg"
-    
+
     def test_detect_from_magic_bytes_gif(self, assembler, sample_gif_bytes):
         """Test MIME detection from GIF magic bytes."""
         mime = assembler._detect_mime_type(Path("test.unknown"), sample_gif_bytes)
         assert mime == "image/gif"
-    
+
     def test_detect_unknown_defaults_to_png(self, assembler):
         """Test unknown format defaults to image/png."""
         unknown_data = b"UNKNOWN_FORMAT_DATA"
@@ -623,13 +728,13 @@ class TestDetectMimeType:
 
 class TestAssembleForResult:
     """Tests for assemble_for_result method."""
-    
+
     def test_assemble_with_images(self, temp_image_dir, sample_png_bytes):
         """Test assembling content for result with images."""
         # Create test image
         img_path = temp_image_dir / "test_img.png"
         img_path.write_bytes(sample_png_bytes)
-        
+
         assembler = MultimodalAssembler()
         result = RetrievalResult(
             chunk_id="test",
@@ -640,24 +745,24 @@ class TestAssembleForResult:
                 "images": [{"id": "test_img", "path": str(img_path)}],
             },
         )
-        
+
         blocks = assembler.assemble_for_result(result)
-        
+
         # Should have at least one ImageContent block
         image_blocks = [b for b in blocks if isinstance(b, types.ImageContent)]
         assert len(image_blocks) >= 1
-    
+
     def test_assemble_without_images(self, assembler, result_without_images):
         """Test assembling returns empty for result without images."""
         blocks = assembler.assemble_for_result(result_without_images)
-        
+
         assert len(blocks) == 0
-    
+
     def test_assemble_includes_caption(self, temp_image_dir, sample_png_bytes):
         """Test that captions are included as text blocks."""
         img_path = temp_image_dir / "captioned_img.png"
         img_path.write_bytes(sample_png_bytes)
-        
+
         assembler = MultimodalAssembler(include_captions=True)
         result = RetrievalResult(
             chunk_id="test",
@@ -669,19 +774,19 @@ class TestAssembleForResult:
                 "image_captions": {"captioned_img": "This is the caption"},
             },
         )
-        
+
         blocks = assembler.assemble_for_result(result)
-        
+
         # Should have TextContent with caption
         text_blocks = [b for b in blocks if isinstance(b, types.TextContent)]
         caption_blocks = [b for b in text_blocks if "caption" in b.text.lower()]
         assert len(caption_blocks) >= 1
-    
+
     def test_assemble_without_captions_disabled(self, temp_image_dir, sample_png_bytes):
         """Test captions not included when disabled."""
         img_path = temp_image_dir / "no_caption_img.png"
         img_path.write_bytes(sample_png_bytes)
-        
+
         assembler = MultimodalAssembler(include_captions=False)
         result = RetrievalResult(
             chunk_id="test",
@@ -693,9 +798,9 @@ class TestAssembleForResult:
                 "image_captions": {"no_caption_img": "This should not appear"},
             },
         )
-        
+
         blocks = assembler.assemble_for_result(result)
-        
+
         # Should only have ImageContent, no caption TextContent
         text_blocks = [b for b in blocks if isinstance(b, types.TextContent)]
         assert len(text_blocks) == 0
@@ -703,16 +808,16 @@ class TestAssembleForResult:
 
 class TestAssembleMultiple:
     """Tests for assemble method (multiple results)."""
-    
+
     def test_assemble_multiple_results(self, temp_image_dir):
         """Test assembling from multiple results with different images."""
         # Create test images with DIFFERENT content to avoid deduplication
         png_data_1 = b"\x89PNG\r\n\x1a\n" + b"\x01" * 100  # Different data
         png_data_2 = b"\x89PNG\r\n\x1a\n" + b"\x02" * 100  # Different data
-        
+
         (temp_image_dir / "multi_img1.png").write_bytes(png_data_1)
         (temp_image_dir / "multi_img2.png").write_bytes(png_data_2)
-        
+
         assembler = MultimodalAssembler()
         results = [
             RetrievalResult(
@@ -734,20 +839,20 @@ class TestAssembleMultiple:
                 },
             ),
         ]
-        
+
         blocks = assembler.assemble(results)
-        
+
         # Should have images from both results (different content, so not deduplicated)
         image_blocks = [b for b in blocks if isinstance(b, types.ImageContent)]
         assert len(image_blocks) >= 2
-    
+
     def test_assemble_deduplicates_images(self, temp_image_dir, sample_png_bytes):
         """Test that duplicate images are deduplicated."""
         img_path = temp_image_dir / "shared_img.png"
         img_path.write_bytes(sample_png_bytes)
-        
+
         assembler = MultimodalAssembler()
-        
+
         # Two results referencing the same image
         results = [
             RetrievalResult(
@@ -769,9 +874,9 @@ class TestAssembleMultiple:
                 },
             ),
         ]
-        
+
         blocks = assembler.assemble(results)
-        
+
         # Should deduplicate - only one image
         image_blocks = [b for b in blocks if isinstance(b, types.ImageContent)]
         assert len(image_blocks) == 1
@@ -784,25 +889,25 @@ class TestAssembleMultiple:
 
 class TestUtilityMethods:
     """Tests for utility methods."""
-    
+
     def test_has_images_true(self, assembler, result_with_images):
         """Test has_images returns True when images present."""
         assert assembler.has_images(result_with_images) is True
-    
+
     def test_has_images_false(self, assembler, result_without_images):
         """Test has_images returns False when no images."""
         assert assembler.has_images(result_without_images) is False
-    
+
     def test_count_images_single(self, assembler, result_with_images):
         """Test counting images in single result."""
         count = assembler.count_images([result_with_images])
         assert count == 2
-    
+
     def test_count_images_multiple(self, assembler, result_with_images, result_without_images):
         """Test counting images across multiple results."""
         count = assembler.count_images([result_with_images, result_without_images])
         assert count == 2  # Only first result has images
-    
+
     def test_count_images_empty(self, assembler):
         """Test counting images returns 0 for empty list."""
         count = assembler.count_images([])
@@ -816,7 +921,7 @@ class TestUtilityMethods:
 
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
-    
+
     def test_none_metadata(self, assembler):
         """Test handling result with None-like metadata."""
         result = RetrievalResult(
@@ -825,10 +930,10 @@ class TestEdgeCases:
             text="Content",
             metadata={"source_path": "test.pdf"},  # Empty but valid
         )
-        
+
         refs = assembler.extract_image_refs(result)
         assert len(refs) == 0
-    
+
     def test_images_not_list(self, assembler):
         """Test handling when images is not a list."""
         result = RetrievalResult(
@@ -840,11 +945,11 @@ class TestEdgeCases:
                 "images": "not_a_list",  # Invalid type
             },
         )
-        
+
         refs = assembler.extract_image_refs(result)
         # Should fallback to text placeholder parsing
         assert len(refs) == 0
-    
+
     def test_image_captions_not_dict(self, assembler):
         """Test handling when image_captions is not a dict."""
         result = RetrievalResult(
@@ -856,12 +961,12 @@ class TestEdgeCases:
                 "image_captions": ["not", "a", "dict"],  # Invalid type
             },
         )
-        
+
         refs = assembler.extract_image_refs(result)
         # Should still extract ref, just without caption
         assert len(refs) == 1
         assert refs[0].caption is None
-    
+
     def test_empty_text(self, assembler):
         """Test handling empty text."""
         result = RetrievalResult(
@@ -870,10 +975,10 @@ class TestEdgeCases:
             text="",
             metadata={"source_path": "test.pdf"},
         )
-        
+
         refs = assembler.extract_image_refs(result)
         assert len(refs) == 0
-    
+
     def test_unicode_in_image_id(self, assembler):
         """Test handling Unicode characters in image ID."""
         result = RetrievalResult(
@@ -882,7 +987,7 @@ class TestEdgeCases:
             text="[IMAGE: 图片_001]",
             metadata={"source_path": "test.pdf"},
         )
-        
+
         refs = assembler.extract_image_refs(result)
         assert len(refs) == 1
         assert refs[0].image_id == "图片_001"

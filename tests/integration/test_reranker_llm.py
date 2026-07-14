@@ -18,6 +18,9 @@ from src.libs.reranker.llm_reranker import LLMReranker
 from src.libs.reranker.reranker_factory import RerankerFactory
 
 
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
+
+
 # =============================================================================
 # Test Data
 # =============================================================================

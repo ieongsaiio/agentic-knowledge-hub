@@ -96,6 +96,15 @@ def _optional_mapping(data: Dict[str, Any], key: str, path: str) -> Dict[str, An
     return value
 
 
+def _optional_list(data: Dict[str, Any], key: str, path: str) -> List[Any]:
+    value = data.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise SettingsError(f"Expected list for field: {path}.{key}")
+    return value
+
+
 @dataclass(frozen=True)
 class LLMSettings:
     provider: str
@@ -140,6 +149,16 @@ class RetrievalSettings:
     sparse_top_k: int
     fusion_top_k: int
     rrf_k: int
+    enable_dense: bool = True
+    enable_sparse: bool = True
+    dense_weight: float = 0.5
+    sparse_weight: float = 0.5
+
+    def __post_init__(self) -> None:
+        if self.dense_weight < 0 or self.sparse_weight < 0:
+            raise SettingsError("retrieval weights must be non-negative")
+        if self.dense_weight == 0 and self.sparse_weight == 0:
+            raise SettingsError("at least one retrieval weight must be greater than zero")
 
 
 @dataclass(frozen=True)
@@ -152,10 +171,39 @@ class RerankSettings:
 
 
 @dataclass(frozen=True)
+class BenchmarkSettings:
+    provider: str
+    source_url: str
+    data_dir: str
+    split: str = "open_source"
+    auto_download: bool = True
+    sample_size: Optional[int] = None
+    seed: int = 42
+
+
+@dataclass(frozen=True)
+class EvaluationExperimentSettings:
+    name: str
+    enabled: bool = True
+    overrides: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EvaluationOutputSettings:
+    directory: str = "./data/evaluation"
+    save_per_query: bool = True
+    formats: List[str] = field(default_factory=lambda: ["json", "jsonl", "csv"])
+
+
+@dataclass(frozen=True)
 class EvaluationSettings:
     enabled: bool
     provider: str
     metrics: List[str]
+    backends: List[str] = field(default_factory=list)
+    benchmark: Optional[BenchmarkSettings] = None
+    experiments: List[EvaluationExperimentSettings] = field(default_factory=list)
+    output: EvaluationOutputSettings = field(default_factory=EvaluationOutputSettings)
 
 
 @dataclass(frozen=True)
@@ -185,6 +233,8 @@ class IngestionSettings:
     chunk_overlap: int
     splitter: str
     batch_size: int
+    length_unit: str = "characters"
+    tokenizer_model: Optional[str] = None
     chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
 
@@ -214,6 +264,78 @@ class Settings:
         evaluation = _require_mapping(data, "evaluation", "settings")
         observability = _require_mapping(data, "observability", "settings")
 
+        evaluation_backends = [
+            str(item) for item in _optional_list(evaluation, "backends", "evaluation")
+        ]
+
+        benchmark_settings = None
+        if evaluation.get("benchmark") is not None:
+            benchmark = _require_mapping(evaluation, "benchmark", "evaluation")
+            benchmark_settings = BenchmarkSettings(
+                provider=_require_str(benchmark, "provider", "evaluation.benchmark"),
+                source_url=_require_str(benchmark, "source_url", "evaluation.benchmark"),
+                data_dir=_require_str(benchmark, "data_dir", "evaluation.benchmark"),
+                split=(
+                    _require_str(benchmark, "split", "evaluation.benchmark")
+                    if "split" in benchmark
+                    else "open_source"
+                ),
+                auto_download=(
+                    _require_bool(benchmark, "auto_download", "evaluation.benchmark")
+                    if "auto_download" in benchmark
+                    else True
+                ),
+                sample_size=(
+                    _require_int(benchmark, "sample_size", "evaluation.benchmark")
+                    if benchmark.get("sample_size") is not None
+                    else None
+                ),
+                seed=(
+                    _require_int(benchmark, "seed", "evaluation.benchmark")
+                    if "seed" in benchmark
+                    else 42
+                ),
+            )
+
+        experiment_settings = []
+        for index, experiment in enumerate(_optional_list(evaluation, "experiments", "evaluation")):
+            experiment_path = f"evaluation.experiments[{index}]"
+            if not isinstance(experiment, dict):
+                raise SettingsError(f"Expected mapping for field: {experiment_path}")
+            experiment_settings.append(
+                EvaluationExperimentSettings(
+                    name=_require_str(experiment, "name", experiment_path),
+                    enabled=(
+                        _require_bool(experiment, "enabled", experiment_path)
+                        if "enabled" in experiment
+                        else True
+                    ),
+                    overrides=_optional_mapping(experiment, "overrides", experiment_path),
+                )
+            )
+
+        output = _optional_mapping(evaluation, "output", "evaluation")
+        output_settings = EvaluationOutputSettings(
+            directory=(
+                _require_str(output, "directory", "evaluation.output")
+                if "directory" in output
+                else "./data/evaluation"
+            ),
+            save_per_query=(
+                _require_bool(output, "save_per_query", "evaluation.output")
+                if "save_per_query" in output
+                else True
+            ),
+            formats=[
+                str(item)
+                for item in (
+                    _require_list(output, "formats", "evaluation.output")
+                    if "formats" in output
+                    else ["json", "jsonl", "csv"]
+                )
+            ],
+        )
+
         ingestion_settings = None
         if "ingestion" in data:
             ingestion = _require_mapping(data, "ingestion", "settings")
@@ -222,6 +344,16 @@ class Settings:
                 chunk_overlap=_require_int(ingestion, "chunk_overlap", "ingestion"),
                 splitter=_require_str(ingestion, "splitter", "ingestion"),
                 batch_size=_require_int(ingestion, "batch_size", "ingestion"),
+                length_unit=(
+                    _require_str(ingestion, "length_unit", "ingestion").lower()
+                    if "length_unit" in ingestion
+                    else "characters"
+                ),
+                tokenizer_model=(
+                    _require_str(ingestion, "tokenizer_model", "ingestion")
+                    if ingestion.get("tokenizer_model") is not None
+                    else None
+                ),
                 chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
             )
@@ -277,6 +409,26 @@ class Settings:
                 sparse_top_k=_require_int(retrieval, "sparse_top_k", "retrieval"),
                 fusion_top_k=_require_int(retrieval, "fusion_top_k", "retrieval"),
                 rrf_k=_require_int(retrieval, "rrf_k", "retrieval"),
+                enable_dense=(
+                    _require_bool(retrieval, "enable_dense", "retrieval")
+                    if "enable_dense" in retrieval
+                    else True
+                ),
+                enable_sparse=(
+                    _require_bool(retrieval, "enable_sparse", "retrieval")
+                    if "enable_sparse" in retrieval
+                    else True
+                ),
+                dense_weight=(
+                    _require_number(retrieval, "dense_weight", "retrieval")
+                    if "dense_weight" in retrieval
+                    else 0.5
+                ),
+                sparse_weight=(
+                    _require_number(retrieval, "sparse_weight", "retrieval")
+                    if "sparse_weight" in retrieval
+                    else 0.5
+                ),
             ),
             rerank=RerankSettings(
                 enabled=_require_bool(rerank, "enabled", "rerank"),
@@ -289,12 +441,18 @@ class Settings:
                 enabled=_require_bool(evaluation, "enabled", "evaluation"),
                 provider=_require_str(evaluation, "provider", "evaluation"),
                 metrics=[str(item) for item in _require_list(evaluation, "metrics", "evaluation")],
+                backends=evaluation_backends,
+                benchmark=benchmark_settings,
+                experiments=experiment_settings,
+                output=output_settings,
             ),
             observability=ObservabilitySettings(
                 log_level=_require_str(observability, "log_level", "observability"),
                 trace_enabled=_require_bool(observability, "trace_enabled", "observability"),
                 trace_file=_require_str(observability, "trace_file", "observability"),
-                structured_logging=_require_bool(observability, "structured_logging", "observability"),
+                structured_logging=_require_bool(
+                    observability, "structured_logging", "observability"
+                ),
             ),
             ingestion=ingestion_settings,
             vision_llm=vision_llm_settings,
@@ -320,6 +478,23 @@ def validate_settings(settings: Settings) -> None:
         raise SettingsError("Missing required field: evaluation.provider")
     if not settings.observability.log_level:
         raise SettingsError("Missing required field: observability.log_level")
+    if settings.ingestion is not None:
+        if settings.ingestion.chunk_size <= 0:
+            raise SettingsError("ingestion.chunk_size must be greater than zero")
+        if settings.ingestion.chunk_overlap < 0:
+            raise SettingsError("ingestion.chunk_overlap must be zero or greater")
+        if settings.ingestion.chunk_overlap >= settings.ingestion.chunk_size:
+            raise SettingsError("ingestion.chunk_overlap must be less than ingestion.chunk_size")
+        if settings.ingestion.length_unit not in {"characters", "tokens"}:
+            raise SettingsError("ingestion.length_unit must be one of: characters, tokens")
+        if (
+            settings.ingestion.length_unit == "tokens"
+            and not settings.ingestion.tokenizer_model
+        ):
+            raise SettingsError(
+                "ingestion.tokenizer_model is required when "
+                "ingestion.length_unit is 'tokens'"
+            )
 
 
 def load_settings(path: str | Path | None = None) -> Settings:

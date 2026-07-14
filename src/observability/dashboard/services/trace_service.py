@@ -81,9 +81,14 @@ class TraceService:
         for s in stages:
             # The raw stage dict has: stage, timestamp, data (dict), elapsed_ms
             # Extract the inner 'data' dict directly rather than flattening
-            stage_data = s.get("data", {})
+            stage_data = s.get("data")
             if not isinstance(stage_data, dict):
-                stage_data = {}
+                # Older traces stored stage-specific fields at the stage root.
+                stage_data = {
+                    key: value
+                    for key, value in s.items()
+                    if key not in {"stage", "timestamp", "elapsed_ms", "data"}
+                }
             timings.append(
                 {
                     "stage_name": s.get("stage"),

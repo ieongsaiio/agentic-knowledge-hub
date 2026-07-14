@@ -405,7 +405,7 @@ class TestTypeConversion:
         assert candidates[0]["text"] == "First chunk about machine learning."
         assert candidates[0]["score"] == 0.9
         assert "source_path" in candidates[0]["metadata"]
-    
+
     def test_candidates_to_results(self, mock_settings, sample_results):
         """Test conversion from candidate dict back to RetrievalResult."""
         reranker = CoreReranker(

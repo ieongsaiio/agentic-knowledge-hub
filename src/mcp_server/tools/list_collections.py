@@ -12,16 +12,19 @@ Usage via MCP:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from mcp import types
 
+from src.mcp_server.tools.document_catalog import build_document_catalog
+
 if TYPE_CHECKING:
-    from src.mcp_server.protocol_handler import ProtocolHandler
     from src.core.settings import Settings
+    from src.mcp_server.protocol_handler import ProtocolHandler
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +35,7 @@ TOOL_DESCRIPTION = """List all available document collections in the knowledge b
 
 Returns information about each collection including:
 - Collection name
-- Document count (if include_stats=true)
+- Document and chunk counts (if include_stats=true)
 - Collection metadata
 
 Use this tool to discover available collections before querying.
@@ -43,7 +46,7 @@ TOOL_INPUT_SCHEMA: Dict[str, Any] = {
     "properties": {
         "include_stats": {
             "type": "boolean",
-            "description": "Whether to include statistics (document count) for each collection.",
+            "description": "Whether to include document and chunk counts for each collection.",
             "default": True,
         },
     },
@@ -57,20 +60,30 @@ class CollectionInfo:
     
     Attributes:
         name: Collection name
-        count: Number of documents/chunks in the collection (optional)
+        document_count: Number of logical documents in the collection
+        chunk_count: Number of Chroma chunk records in the collection
         metadata: Collection metadata dictionary
     """
     name: str
-    count: Optional[int] = None
+    document_count: Optional[int] = None
+    chunk_count: Optional[int] = None
     metadata: Optional[Dict[str, Any]] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary representation."""
         result: Dict[str, Any] = {"name": self.name}
-        if self.count is not None:
-            result["count"] = self.count
+        if self.document_count is not None:
+            result["document_count"] = self.document_count
+        if self.chunk_count is not None:
+            result["chunk_count"] = self.chunk_count
         if self.metadata:
-            result["metadata"] = self.metadata
+            user_metadata = {
+                key: value
+                for key, value in self.metadata.items()
+                if not key.startswith("_") and not key.startswith("hnsw:")
+            }
+            if user_metadata:
+                result["metadata"] = user_metadata
         return result
 
 
@@ -190,7 +203,7 @@ class ListCollectionsTool:
         """List all available collections.
         
         Args:
-            include_stats: Whether to include document counts.
+            include_stats: Whether to include document and chunk counts.
             
         Returns:
             List of CollectionInfo objects.
@@ -215,12 +228,14 @@ class ListCollectionsTool:
                 
                 if include_stats:
                     try:
-                        info.count = collection.count()
+                        info.chunk_count = collection.count()
+                        info.document_count = len(build_document_catalog(collection))
                     except Exception as e:
                         logger.warning(
-                            f"Failed to get count for collection '{collection.name}': {e}"
+                            f"Failed to get stats for collection '{collection.name}': {e}"
                         )
-                        info.count = None
+                        info.document_count = None
+                        info.chunk_count = None
                 
                 collections_info.append(info)
                 
@@ -253,8 +268,15 @@ class ListCollectionsTool:
         for i, coll in enumerate(collections, 1):
             line = f"{i}. **{coll.name}**"
             
-            if coll.count is not None:
-                line += f" - {coll.count} documents"
+            if coll.document_count is not None and coll.chunk_count is not None:
+                document_label = (
+                    "document" if coll.document_count == 1 else "documents"
+                )
+                chunk_label = "chunk" if coll.chunk_count == 1 else "chunks"
+                line += (
+                    f" - {coll.document_count} {document_label}, "
+                    f"{coll.chunk_count} {chunk_label}"
+                )
             
             if coll.metadata:
                 # Filter out internal metadata
@@ -269,6 +291,17 @@ class ListCollectionsTool:
             lines.append(line)
         
         return "\n".join(lines)
+
+    @staticmethod
+    def format_json(collections: List[CollectionInfo]) -> str:
+        payload = {
+            "collection_count": len(collections),
+            "collections": [collection.to_dict() for collection in collections],
+        }
+        return (
+            "\n---\n**Collections (JSON):**\n```json\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n```"
+        )
     
     async def execute(
         self,
@@ -297,7 +330,11 @@ class ListCollectionsTool:
                     types.TextContent(
                         type="text",
                         text=response_text,
-                    )
+                    ),
+                    types.TextContent(
+                        type="text",
+                        text=self.format_json(collections),
+                    ),
                 ],
                 isError=False,
             )

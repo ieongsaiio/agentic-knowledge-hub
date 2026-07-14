@@ -19,6 +19,9 @@ from src.core.trace.trace_context import TraceContext
 from src.ingestion.transform.chunk_refiner import ChunkRefiner
 
 
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
+
+
 # Test data: Realistic noisy chunk from PDF extraction
 NOISY_PDF_CHUNK = """
 ────────────────────────────

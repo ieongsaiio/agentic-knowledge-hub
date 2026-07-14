@@ -19,15 +19,15 @@ from src.libs.reranker.reranker_factory import RerankerFactory
 
 class FakeReranker(BaseReranker):
     """Fake reranker implementation for testing.
-    
+
     Sorts candidates by descending score for deterministic behavior.
     """
-    
+
     def __init__(self, settings: Any = None, **kwargs: Any) -> None:
         self.settings = settings
         self.kwargs = kwargs
         self.call_count = 0
-    
+
     def rerank(
         self,
         query: str,
@@ -43,35 +43,35 @@ class FakeReranker(BaseReranker):
 
 class TestBaseReranker:
     """Tests for BaseReranker validation helpers."""
-    
+
     def test_validate_query_success(self):
         reranker = FakeReranker()
         reranker.validate_query("hello")
-    
+
     def test_validate_query_empty(self):
         reranker = FakeReranker()
         with pytest.raises(ValueError, match="cannot be empty"):
             reranker.validate_query("   ")
-    
+
     def test_validate_query_non_string(self):
         reranker = FakeReranker()
         with pytest.raises(ValueError, match="must be a string"):
             reranker.validate_query(123)  # type: ignore[arg-type]
-    
+
     def test_validate_candidates_success(self):
         reranker = FakeReranker()
         reranker.validate_candidates([{"id": "1"}, {"id": "2"}])
-    
+
     def test_validate_candidates_empty(self):
         reranker = FakeReranker()
         with pytest.raises(ValueError, match="cannot be empty"):
             reranker.validate_candidates([])
-    
+
     def test_validate_candidates_non_list(self):
         reranker = FakeReranker()
         with pytest.raises(ValueError, match="must be a list"):
             reranker.validate_candidates("invalid")  # type: ignore[arg-type]
-    
+
     def test_validate_candidates_non_dict(self):
         reranker = FakeReranker()
         with pytest.raises(ValueError, match="not a dict"):
@@ -80,7 +80,7 @@ class TestBaseReranker:
 
 class TestNoneReranker:
     """Tests for NoneReranker behavior."""
-    
+
     def test_rerank_preserves_order(self):
         reranker = NoneReranker()
         candidates = [
@@ -95,83 +95,83 @@ class TestNoneReranker:
 
 class TestRerankerFactory:
     """Tests for RerankerFactory."""
-    
+
     def setup_method(self) -> None:
         RerankerFactory._PROVIDERS.clear()
-    
+
     def test_register_provider_success(self):
         RerankerFactory.register_provider("fake", FakeReranker)
         assert "fake" in RerankerFactory._PROVIDERS
         assert RerankerFactory._PROVIDERS["fake"] == FakeReranker
-    
+
     def test_register_provider_case_insensitive(self):
         RerankerFactory.register_provider("FAKE", FakeReranker)
         assert "fake" in RerankerFactory._PROVIDERS
-    
+
     def test_register_provider_invalid_class(self):
         class NotAReranker:
             pass
-        
+
         with pytest.raises(ValueError, match="must inherit from BaseReranker"):
             RerankerFactory.register_provider("invalid", NotAReranker)  # type: ignore[arg-type]
-    
+
     def test_list_providers_empty(self):
         assert RerankerFactory.list_providers() == []
-    
+
     def test_list_providers_sorted(self):
         RerankerFactory.register_provider("zebra", FakeReranker)
         RerankerFactory.register_provider("alpha", FakeReranker)
         RerankerFactory.register_provider("beta", FakeReranker)
         assert RerankerFactory.list_providers() == ["alpha", "beta", "zebra"]
-    
+
     def test_create_success(self):
         RerankerFactory.register_provider("fake", FakeReranker)
         settings = MagicMock()
         settings.rerank = MagicMock()
         settings.rerank.enabled = True
         settings.rerank.provider = "fake"
-        
+
         reranker = RerankerFactory.create(settings)
         assert isinstance(reranker, FakeReranker)
         assert reranker.settings == settings
-    
+
     def test_create_case_insensitive(self):
         RerankerFactory.register_provider("fake", FakeReranker)
         settings = MagicMock()
         settings.rerank = MagicMock()
         settings.rerank.enabled = True
         settings.rerank.provider = "FAKE"
-        
+
         reranker = RerankerFactory.create(settings)
         assert isinstance(reranker, FakeReranker)
-    
+
     def test_create_disabled_returns_none(self):
         settings = MagicMock()
         settings.rerank = MagicMock()
         settings.rerank.enabled = False
         settings.rerank.provider = "fake"
-        
+
         reranker = RerankerFactory.create(settings)
         assert isinstance(reranker, NoneReranker)
-    
+
     def test_create_provider_none_returns_none(self):
         settings = MagicMock()
         settings.rerank = MagicMock()
         settings.rerank.enabled = True
         settings.rerank.provider = "none"
-        
+
         reranker = RerankerFactory.create(settings)
         assert isinstance(reranker, NoneReranker)
-    
+
     def test_create_unknown_provider(self):
         settings = MagicMock()
         settings.rerank = MagicMock()
         settings.rerank.enabled = True
         settings.rerank.provider = "unknown"
-        
+
         with pytest.raises(ValueError) as exc_info:
             RerankerFactory.create(settings)
-        
+
         error_message = str(exc_info.value)
         assert "Unsupported Reranker provider: 'unknown'" in error_message
         assert "Available providers" in error_message
@@ -191,14 +191,14 @@ class TestRerankerFactory:
         reranker = RerankerFactory.create(settings)
 
         assert reranker.__class__.__name__ == "CrossEncoderAPIReranker"
-    
+
     def test_create_missing_provider_config(self):
         settings = MagicMock()
         settings.rerank = None
-        
+
         with pytest.raises(ValueError) as exc_info:
             RerankerFactory.create(settings)
-        
+
         error_message = str(exc_info.value)
         assert "settings.rerank.provider" in error_message
 

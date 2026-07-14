@@ -18,6 +18,9 @@ from src.core.settings import load_settings
 from src.libs.embedding.embedding_factory import EmbeddingFactory
 
 
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
+
+
 @pytest.fixture(scope="module")
 def settings():
     """Load settings from config file."""

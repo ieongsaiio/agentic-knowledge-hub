@@ -128,7 +128,8 @@ class TestElapsedMs:
 
     def test_total_elapsed_positive(self) -> None:
         tc = TraceContext()
-        time.sleep(0.005)
+        # Keep the delay above the coarsest Windows monotonic clock tick.
+        time.sleep(0.02)
         assert tc.elapsed_ms() > 0
 
     def test_stage_elapsed(self) -> None:

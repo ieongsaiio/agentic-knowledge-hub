@@ -21,6 +21,9 @@ from src.core.settings import load_settings
 from src.ingestion.pipeline import IngestionPipeline, PipelineResult
 
 
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
+
+
 class TestIngestionPipeline:
     """Integration tests for the full ingestion pipeline."""
     

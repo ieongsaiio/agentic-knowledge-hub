@@ -14,14 +14,61 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
-from dataclasses import dataclass, field, asdict
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.libs.benchmark.base_benchmark import BenchmarkCase
 from src.libs.evaluator.base_evaluator import BaseEvaluator
+from src.observability.evaluation.answer_generator import GeneratedAnswer
 
 logger = logging.getLogger(__name__)
+
+_ANSWER_METRICS = {
+    "answer_exact_match",
+    "answer_token_f1",
+    "numeric_accuracy",
+}
+
+
+def requires_generated_answer(settings: Any) -> bool:
+    """Return whether configured evaluators consume a generated answer."""
+    if settings is None:
+        return False
+
+    evaluation = (
+        settings.get("evaluation")
+        if isinstance(settings, Mapping)
+        else getattr(settings, "evaluation", None)
+    )
+    if evaluation is None:
+        return False
+
+    if isinstance(evaluation, Mapping):
+        provider = evaluation.get("provider", "")
+        backends = evaluation.get("backends", [])
+        metrics = evaluation.get("metrics", [])
+    else:
+        provider = getattr(evaluation, "provider", "")
+        backends = getattr(evaluation, "backends", [])
+        metrics = getattr(evaluation, "metrics", [])
+
+    normalized_provider = str(provider).strip().lower()
+    normalized_backends = {
+        str(backend).strip().lower()
+        for backend in (backends if isinstance(backends, (list, tuple, set)) else [])
+    }
+    if normalized_provider == "ragas" or "ragas" in normalized_backends:
+        return True
+
+    metric_names = metrics if isinstance(metrics, (list, tuple, set)) else [metrics]
+    return any(
+        str(metric).strip().lower().split("@", 1)[0] in _ANSWER_METRICS
+        for metric in metric_names
+    )
 
 
 @dataclass
@@ -39,15 +86,52 @@ class GoldenTestCase:
     expected_chunk_ids: List[str] = field(default_factory=list)
     expected_sources: List[str] = field(default_factory=list)
     reference_answer: Optional[str] = None
+    case_id: Optional[str] = None
+    expected_pages: List[int] = field(default_factory=list)
+    expected_evidence: List[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> GoldenTestCase:
+        evidences = data.get("evidences") or []
+
+        def evidence_value(evidence: Any, name: str) -> Any:
+            if isinstance(evidence, Mapping):
+                return evidence.get(name)
+            return getattr(evidence, name, None)
+
+        evidence_sources = [
+            value
+            for evidence in evidences
+            if (value := evidence_value(evidence, "document_name")) is not None
+        ]
+        evidence_pages = [
+            value
+            for evidence in evidences
+            if (value := evidence_value(evidence, "page_number")) is not None
+        ]
+        evidence_texts = [
+            value
+            for evidence in evidences
+            if (value := evidence_value(evidence, "text")) is not None
+        ]
+        expected_sources = data.get("expected_sources")
+        if expected_sources is None:
+            expected_sources = data.get("expected_documents", evidence_sources)
+
         return cls(
             query=data["query"],
-            expected_chunk_ids=data.get("expected_chunk_ids", []),
-            expected_sources=data.get("expected_sources", []),
+            expected_chunk_ids=list(data.get("expected_chunk_ids", data.get("ids", []))),
+            expected_sources=list(expected_sources),
             reference_answer=data.get("reference_answer"),
+            case_id=data.get("case_id"),
+            expected_pages=list(data.get("expected_pages", evidence_pages)),
+            expected_evidence=list(data.get("expected_evidence", evidence_texts)),
         )
+
+    @property
+    def expected_documents(self) -> List[str]:
+        """Return the normalized document-name alias."""
+        return self.expected_sources
 
 
 @dataclass
@@ -67,6 +151,39 @@ class QueryResult:
     generated_answer: Optional[str] = None
     metrics: Dict[str, float] = field(default_factory=dict)
     elapsed_ms: float = 0.0
+    case_id: Optional[str] = None
+    reference_answer: Optional[str] = None
+    retrieved_results: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise this per-query result."""
+        return {
+            "query": self.query,
+            "case_id": self.case_id,
+            "reference_answer": self.reference_answer,
+            "retrieved_chunk_ids": self.retrieved_chunk_ids,
+            "retrieved_results": self.retrieved_results,
+            "generated_answer": self.generated_answer,
+            "metrics": {k: round(v, 4) for k, v in self.metrics.items()},
+            "elapsed_ms": round(self.elapsed_ms, 1),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> QueryResult:
+        """Restore a per-query result from a checkpoint record."""
+        return cls(
+            query=str(data.get("query") or ""),
+            case_id=data.get("case_id"),
+            reference_answer=data.get("reference_answer"),
+            retrieved_chunk_ids=list(data.get("retrieved_chunk_ids") or []),
+            retrieved_results=list(data.get("retrieved_results") or []),
+            generated_answer=data.get("generated_answer"),
+            metrics={
+                str(key): float(value)
+                for key, value in (data.get("metrics") or {}).items()
+            },
+            elapsed_ms=float(data.get("elapsed_ms") or 0.0),
+        )
 
 
 @dataclass
@@ -93,20 +210,9 @@ class EvalReport:
             "evaluator_name": self.evaluator_name,
             "test_set_path": self.test_set_path,
             "total_elapsed_ms": round(self.total_elapsed_ms, 1),
-            "aggregate_metrics": {
-                k: round(v, 4) for k, v in self.aggregate_metrics.items()
-            },
+            "aggregate_metrics": {k: round(v, 4) for k, v in self.aggregate_metrics.items()},
             "query_count": len(self.query_results),
-            "query_results": [
-                {
-                    "query": qr.query,
-                    "retrieved_chunk_ids": qr.retrieved_chunk_ids,
-                    "generated_answer": qr.generated_answer,
-                    "metrics": {k: round(v, 4) for k, v in qr.metrics.items()},
-                    "elapsed_ms": round(qr.elapsed_ms, 1),
-                }
-                for qr in self.query_results
-            ],
+            "query_results": [qr.to_dict() for qr in self.query_results],
         }
 
 
@@ -131,9 +237,7 @@ def load_test_set(path: str | Path) -> List[GoldenTestCase]:
         data = json.load(f)
 
     if "test_cases" not in data:
-        raise ValueError(
-            "Invalid golden test set format: missing 'test_cases' key."
-        )
+        raise ValueError("Invalid golden test set format: missing 'test_cases' key.")
 
     return [GoldenTestCase.from_dict(tc) for tc in data["test_cases"]]
 
@@ -216,30 +320,89 @@ class EvalRunner:
         if not test_cases:
             raise ValueError("Golden test set is empty.")
 
+        report = self.run_cases(
+            test_cases,
+            top_k=top_k,
+            collection=collection,
+        )
+        report.test_set_path = str(test_set_path)
+        return report
+
+    def run_cases(
+        self,
+        cases: list[BenchmarkCase | GoldenTestCase],
+        top_k: int = 10,
+        collection: Optional[str] = None,
+        checkpoint_path: str | Path | None = None,
+    ) -> EvalReport:
+        """Run evaluation for normalized benchmark or legacy golden cases."""
+        if self.evaluator is None:
+            raise ValueError("EvalRunner requires an evaluator.")
+        if not cases:
+            raise ValueError("Evaluation case list is empty.")
+
         logger.info(
-            "Starting evaluation: %d test cases, evaluator=%s",
-            len(test_cases),
+            "Starting evaluation: %d cases, evaluator=%s",
+            len(cases),
             type(self.evaluator).__name__,
         )
 
         report = EvalReport(
             evaluator_name=type(self.evaluator).__name__,
-            test_set_path=str(test_set_path),
         )
 
-        t0 = time.monotonic()
+        checkpoint = Path(checkpoint_path) if checkpoint_path is not None else None
+        completed = self._load_checkpoint(checkpoint)
+        if completed:
+            logger.info(
+                "Resuming evaluation from %s with %d completed cases",
+                checkpoint,
+                len(completed),
+            )
 
-        for idx, tc in enumerate(test_cases):
-            logger.info("Evaluating [%d/%d]: %s", idx + 1, len(test_cases), tc.query[:60])
+        for idx, tc in enumerate(cases):
+            case_key = self._case_key(tc, idx)
+            cached = completed.get(case_key)
+            if cached is not None and cached.query == tc.query:
+                report.query_results.append(cached)
+                continue
+            logger.info(
+                "Evaluating [%d/%d]: %s",
+                idx + 1,
+                len(cases),
+                tc.query[:60],
+            )
             # Use user-provided answer override if available for this index
             answer_override = self.answer_overrides.get(idx)
-            qr = self._evaluate_single(
-                tc, top_k=top_k, collection=collection,
-                answer_override=answer_override,
-            )
+            case_started = time.monotonic()
+            try:
+                qr = self._evaluate_single(
+                    tc,
+                    top_k=top_k,
+                    collection=collection,
+                    answer_override=answer_override,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Case failed for '%s': %s",
+                    tc.query[:40],
+                    exc,
+                    exc_info=True,
+                )
+                qr = QueryResult(
+                    query=tc.query,
+                    case_id=getattr(tc, "case_id", None),
+                    reference_answer=getattr(tc, "reference_answer", None),
+                    elapsed_ms=(time.monotonic() - case_started) * 1000.0,
+                )
             report.query_results.append(qr)
+            if checkpoint is not None:
+                self._append_checkpoint(checkpoint, case_key, qr)
 
-        report.total_elapsed_ms = (time.monotonic() - t0) * 1000.0
+        report.total_elapsed_ms = max(
+            sum(result.elapsed_ms for result in report.query_results),
+            0.001,
+        )
         report.aggregate_metrics = self._aggregate_metrics(report.query_results)
 
         logger.info(
@@ -250,9 +413,48 @@ class EvalRunner:
 
         return report
 
+    @staticmethod
+    def _case_key(case: BenchmarkCase | GoldenTestCase, index: int) -> str:
+        case_id = getattr(case, "case_id", None)
+        return f"id:{case_id}" if case_id is not None else f"index:{index}"
+
+    @staticmethod
+    def _load_checkpoint(path: Path | None) -> Dict[str, QueryResult]:
+        if path is None or not path.is_file():
+            return {}
+        completed: Dict[str, QueryResult] = {}
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    payload = json.loads(line)
+                    case_key = str(payload["case_key"])
+                    completed[case_key] = QueryResult.from_dict(payload["result"])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    logger.warning(
+                        "Ignoring invalid checkpoint line %d in %s: %s",
+                        line_number,
+                        path,
+                        exc,
+                    )
+        return completed
+
+    @staticmethod
+    def _append_checkpoint(path: Path, case_key: str, result: QueryResult) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "case_key": case_key,
+            "result": result.to_dict(),
+        }
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
     def _evaluate_single(
         self,
-        test_case: GoldenTestCase,
+        test_case: BenchmarkCase | GoldenTestCase,
         top_k: int = 10,
         collection: Optional[str] = None,
         answer_override: Optional[str] = None,
@@ -270,27 +472,32 @@ class EvalRunner:
             QueryResult with metrics for this test case.
         """
         t0 = time.monotonic()
-        qr = QueryResult(query=test_case.query)
+        qr = QueryResult(
+            query=test_case.query,
+            case_id=getattr(test_case, "case_id", None),
+            reference_answer=getattr(test_case, "reference_answer", None),
+        )
 
         # Step 1: Retrieve chunks
         retrieved_chunks = self._retrieve(test_case.query, top_k, collection)
-        qr.retrieved_chunk_ids = [
-            self._get_chunk_id(c) for c in retrieved_chunks
-        ]
+        qr.retrieved_chunk_ids = [self._get_chunk_id(c) for c in retrieved_chunks]
+        qr.retrieved_results = [self._retrieved_result_to_dict(c) for c in retrieved_chunks]
 
-        # Step 2: Generate answer — prefer user override, then generator, then fallback
-        if answer_override:
+        # Step 2: Generate an answer only when a configured metric requires one.
+        if answer_override is not None:
             answer = answer_override
+        elif self._requires_generated_answer():
+            answer = self._generate_answer(
+                test_case.query,
+                retrieved_chunks,
+                test_case,
+            )
         else:
-            answer = self._generate_answer(test_case.query, retrieved_chunks)
+            answer = None
         qr.generated_answer = answer
 
         # Step 3: Build ground truth
-        ground_truth = (
-            {"ids": test_case.expected_chunk_ids}
-            if test_case.expected_chunk_ids
-            else None
-        )
+        ground_truth = self._build_ground_truth(test_case)
 
         # Step 4: Evaluate
         try:
@@ -308,6 +515,12 @@ class EvalRunner:
         qr.elapsed_ms = (time.monotonic() - t0) * 1000.0
         return qr
 
+    def _requires_generated_answer(self) -> bool:
+        """Return whether configured evaluators consume a generated answer."""
+        if self.settings is None:
+            return self.answer_generator is not None
+        return requires_generated_answer(self.settings)
+
     def _retrieve(
         self,
         query: str,
@@ -323,19 +536,32 @@ class EvalRunner:
             return []
 
         try:
-            # Retrieve more candidates if reranker is enabled
-            has_reranker = self.reranker is not None and getattr(self.reranker, 'is_enabled', False)
-            initial_top_k = top_k * 2 if has_reranker else top_k
+            has_reranker = self.reranker is not None and getattr(self.reranker, "is_enabled", False)
+            if has_reranker:
+                retrieval_settings = getattr(self.settings, "retrieval", None)
+                configured_fusion_top_k = int(
+                    getattr(retrieval_settings, "fusion_top_k", 0) or 0
+                )
+                initial_top_k = max(top_k * 2, configured_fusion_top_k)
+            else:
+                initial_top_k = top_k
 
-            results = self.hybrid_search.search(
-                query=query,
-                top_k=initial_top_k,
-            )
-            results = results if isinstance(results, list) else results.results
+            search_kwargs: Dict[str, Any] = {
+                "query": query,
+                "top_k": initial_top_k,
+            }
+            if collection is not None:
+                search_kwargs["filters"] = {"collection": collection}
+            search_result = self.hybrid_search.search(**search_kwargs)
+            results = search_result if isinstance(search_result, list) else search_result.results
 
             # Apply reranking if enabled
             if has_reranker and results:
-                rerank_result = self.reranker.rerank(query=query, results=results, top_k=top_k)
+                rerank_result = self.reranker.rerank(
+                    query=query,
+                    results=results,
+                    top_k=top_k,
+                )
                 results = rerank_result.results
 
             return results
@@ -343,7 +569,12 @@ class EvalRunner:
             logger.warning("Retrieval failed for '%s': %s", query[:40], exc)
             return []
 
-    def _generate_answer(self, query: str, chunks: List[Any]) -> str:
+    def _generate_answer(
+        self,
+        query: str,
+        chunks: List[Any],
+        test_case: Optional[BenchmarkCase | GoldenTestCase] = None,
+    ) -> str:
         """Generate an answer from retrieved chunks.
 
         If a custom answer_generator is provided, use it.
@@ -351,7 +582,26 @@ class EvalRunner:
         """
         if self.answer_generator is not None:
             try:
-                return self.answer_generator(query, chunks)
+                generator = self.answer_generator
+                if isinstance(generator, str):
+                    return generator
+
+                generate = getattr(generator, "generate", None)
+                if callable(generate):
+                    try:
+                        generated = generate(query, chunks, case=test_case)
+                    except TypeError:
+                        generated = generate(query, chunks)
+                elif callable(generator):
+                    generated = generator(query, chunks)
+                else:
+                    generated = generator
+
+                if isinstance(generated, GeneratedAnswer):
+                    return generated.content
+                if isinstance(generated, str):
+                    return generated
+                return str(generated)
             except Exception as exc:
                 logger.warning("Answer generation failed: %s", exc)
 
@@ -369,11 +619,86 @@ class EvalRunner:
 
         return " ".join(texts[:5])  # first 5 chunks
 
-    def _get_chunk_id(self, chunk: Any) -> str:
+    @staticmethod
+    def _build_ground_truth(
+        test_case: BenchmarkCase | GoldenTestCase,
+    ) -> Dict[str, Any]:
+        """Build the common evaluator ground-truth contract."""
+        if isinstance(test_case, BenchmarkCase):
+            expected_ids: List[str] = []
+            expected_documents = list(test_case.expected_documents)
+            expected_pages = list(test_case.expected_pages)
+            expected_evidence = list(test_case.expected_evidence)
+        else:
+            expected_ids = list(test_case.expected_chunk_ids)
+            expected_documents = list(test_case.expected_sources)
+            expected_pages = list(test_case.expected_pages)
+            expected_evidence = list(test_case.expected_evidence)
+
+        ground_truth: Dict[str, Any] = {
+            "case_id": getattr(test_case, "case_id", None),
+            "query": test_case.query,
+            "ids": expected_ids,
+            "expected_sources": expected_documents,
+            "expected_documents": expected_documents,
+            "expected_pages": expected_pages,
+            "expected_evidence": expected_evidence,
+            "reference_answer": getattr(test_case, "reference_answer", None),
+        }
+        if isinstance(test_case, BenchmarkCase):
+            ground_truth["benchmark_case"] = test_case
+            ground_truth["metadata"] = dict(test_case.metadata)
+        return ground_truth
+
+    @classmethod
+    def _retrieved_result_to_dict(cls, chunk: Any) -> Dict[str, Any]:
+        """Extract useful retrieval details where available."""
+        details: Dict[str, Any] = {"id": cls._get_chunk_id(chunk)}
+        if isinstance(chunk, str):
+            details["text"] = chunk
+            return details
+
+        if isinstance(chunk, Mapping):
+            text = next(
+                (
+                    chunk[key]
+                    for key in ("text", "content", "page_content")
+                    if chunk.get(key) is not None
+                ),
+                None,
+            )
+            metadata = chunk.get("metadata")
+            score = chunk.get("score", chunk.get("relevance_score"))
+        else:
+            text = next(
+                (
+                    getattr(chunk, key)
+                    for key in ("text", "content", "page_content")
+                    if getattr(chunk, key, None) is not None
+                ),
+                None,
+            )
+            metadata = getattr(chunk, "metadata", None)
+            score = getattr(
+                chunk,
+                "score",
+                getattr(chunk, "relevance_score", None),
+            )
+
+        if text is not None:
+            details["text"] = str(text)
+        if isinstance(metadata, Mapping):
+            details["metadata"] = dict(metadata)
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            details["score"] = score
+        return details
+
+    @staticmethod
+    def _get_chunk_id(chunk: Any) -> str:
         """Extract chunk ID from various representations."""
         if isinstance(chunk, str):
             return chunk
-        if isinstance(chunk, dict):
+        if isinstance(chunk, Mapping):
             for key in ("id", "chunk_id"):
                 if key in chunk:
                     return str(chunk[key])

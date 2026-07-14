@@ -20,6 +20,19 @@ from src.libs.evaluator.base_evaluator import BaseEvaluator
 logger = logging.getLogger(__name__)
 
 
+class _SettingsOverride:
+    """Delegate settings attributes except for explicitly overridden values."""
+
+    def __init__(self, base: Any, **overrides: Any) -> None:
+        self._base = base
+        self._overrides = overrides
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._overrides:
+            return self._overrides[name]
+        return getattr(self._base, name)
+
+
 class CompositeEvaluator(BaseEvaluator):
     """Evaluator that composes multiple evaluators and merges metrics.
 
@@ -112,7 +125,8 @@ class CompositeEvaluator(BaseEvaluator):
             RuntimeError: If ALL sub-evaluators fail.
         """
         self.validate_query(query)
-        self.validate_retrieved_chunks(retrieved_chunks)
+        if not isinstance(retrieved_chunks, list):
+            raise ValueError("retrieved_chunks must be a list")
 
         merged: Dict[str, float] = {}
         errors: List[str] = []
@@ -151,9 +165,7 @@ class CompositeEvaluator(BaseEvaluator):
                 errors.append(msg)
 
         if not merged and errors:
-            raise RuntimeError(
-                "All sub-evaluators failed:\n" + "\n".join(errors)
-            )
+            raise RuntimeError("All sub-evaluators failed:\n" + "\n".join(errors))
 
         return merged
 
@@ -206,16 +218,17 @@ class CompositeEvaluator(BaseEvaluator):
                 continue  # avoid infinite recursion / no-ops
 
             try:
-                # Create a mock settings with provider overridden
-                from unittest.mock import MagicMock
-
-                sub_settings = MagicMock(wraps=settings)
-                sub_eval = MagicMock()
-                sub_eval.enabled = True
-                sub_eval.provider = backend_name
-                sub_eval.metrics = getattr(evaluation, "metrics", [])
-                sub_eval.backends = []  # prevent recursion
-                sub_settings.evaluation = sub_eval
+                sub_eval = _SettingsOverride(
+                    evaluation,
+                    enabled=True,
+                    provider=backend_name,
+                    metrics=getattr(evaluation, "metrics", []),
+                    backends=[],
+                )
+                sub_settings = _SettingsOverride(
+                    settings,
+                    evaluation=sub_eval,
+                )
 
                 evaluator = EvaluatorFactory.create(sub_settings, **kwargs)
                 evaluators.append(evaluator)
