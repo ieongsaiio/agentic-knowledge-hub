@@ -36,6 +36,7 @@ class ToolDefinition:
     description: str
     input_schema: Dict[str, Any]
     handler: Callable[..., Any]
+    output_schema: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -67,6 +68,7 @@ class ProtocolHandler:
         description: str,
         input_schema: Dict[str, Any],
         handler: Callable[..., Any],
+        output_schema: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Register a tool with the protocol handler.
 
@@ -75,6 +77,7 @@ class ProtocolHandler:
             description: Human-readable description of what the tool does.
             input_schema: JSON Schema for the tool's input parameters.
             handler: Async function that executes the tool logic.
+            output_schema: Optional JSON Schema for structuredContent.
 
         Raises:
             ValueError: If a tool with the same name is already registered.
@@ -87,6 +90,7 @@ class ProtocolHandler:
             description=description,
             input_schema=input_schema,
             handler=handler,
+            output_schema=output_schema,
         )
         self._logger.info("Registered tool: %s", name)
 
@@ -101,6 +105,7 @@ class ProtocolHandler:
                 name=tool.name,
                 description=tool.description,
                 inputSchema=tool.input_schema,
+                outputSchema=tool.output_schema,
             )
             for tool in self.tools.values()
         ]

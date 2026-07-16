@@ -126,6 +126,29 @@ class TestChromaStoreQueryOperations:
         """Test querying an empty collection returns empty list."""
         results = chroma_store.query([0.1, 0.2, 0.3], top_k=5)
         assert results == []
+
+    def test_get_by_ids_returns_records_in_requested_order(self, chroma_store):
+        records = [
+            {
+                "id": "chunk_a",
+                "vector": [1.0, 0.0, 0.0],
+                "metadata": {"text": "full text A", "source": "a.pdf"},
+            },
+            {
+                "id": "chunk_b",
+                "vector": [0.0, 1.0, 0.0],
+                "metadata": {"text": "full text B", "source": "b.pdf"},
+            },
+        ]
+        chroma_store.upsert(records)
+
+        results = chroma_store.get_by_ids(["chunk_b", "missing", "chunk_a"])
+
+        assert results[0]["id"] == "chunk_b"
+        assert results[0]["text"] == "full text B"
+        assert results[1] == {}
+        assert results[2]["id"] == "chunk_a"
+        assert results[2]["text"] == "full text A"
     
     def test_query_returns_top_k(self, chroma_store):
         """Test that query respects top_k parameter."""

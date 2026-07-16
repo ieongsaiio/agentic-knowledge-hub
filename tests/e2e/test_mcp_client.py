@@ -500,19 +500,12 @@ class TestMCPClientE2E:
         )
         assert len(all_text) > 0, "Response should contain non-empty text content"
 
-        # The response should either have citation markers or indicate no results
-        has_citations = "[1]" in all_text or "**Sources**" in all_text or "citation" in all_text.lower()
-        has_no_results = (
-            "no results" in all_text.lower()
-            or "no relevant" in all_text.lower()
-            or "no documents" in all_text.lower()
-            or "not found" in all_text.lower()
-            or "0 result" in all_text.lower()
-            or result.get("isError") is True
-        )
-        assert has_citations or has_no_results, (
-            f"Expected citations or 'no results' indication in response text: {all_text[:300]}"
-        )
+        assert all_text.startswith("<retrieval_results")
+        structured = result.get("structuredContent")
+        assert isinstance(structured, dict)
+        assert structured["query"] == "RAG pipeline architecture"
+        assert structured["result_count"] == len(structured["results"])
+        assert structured["is_empty"] is (structured["result_count"] == 0)
 
     # ------------------------------------------------------------------
     # 7. Multiple sequential calls in the same session

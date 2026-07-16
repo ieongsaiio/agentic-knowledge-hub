@@ -538,4 +538,4 @@ class ChromaStore(BaseVectorStore):
                 output.append({})
 
         logger.debug(f"Retrieved {len([r for r in output if r])} of {len(ids)} records by IDs")
-        return outpu
+        return output

@@ -7,7 +7,7 @@ can be used by AI assistants for source attribution.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from src.core.types import RetrievalResult
@@ -23,7 +23,8 @@ class Citation:
         source: Source file path or document name
         page: Page number in source document (if applicable)
         score: Relevance score from retrieval
-        text_snippet: Short excerpt from the referenced content
+        text_snippet: Complete referenced chunk text. The legacy field name is
+            retained for response compatibility.
         metadata: Additional metadata (title, section, etc.)
     """
     index: int
@@ -72,7 +73,9 @@ class CitationGenerator:
         """Initialize CitationGenerator.
         
         Args:
-            snippet_max_length: Maximum characters for text_snippet (default: 200)
+            snippet_max_length: Deprecated compatibility argument. Citation text
+                is always returned in full so downstream LLMs receive the complete
+                retrieved chunk.
             include_metadata_fields: Optional list of metadata fields to include.
                 If None, includes 'title', 'section', 'chunk_index'.
         """
@@ -141,26 +144,18 @@ class CitationGenerator:
         )
     
     def _generate_snippet(self, text: str) -> str:
-        """Generate a truncated snippet from text.
+        """Return the complete retrieved chunk text.
         
         Args:
             text: Full text content.
             
         Returns:
-            Truncated text with ellipsis if needed.
+            Full text without whitespace normalization or truncation.
         """
         if not text:
             return ""
         
-        # Clean up whitespace
-        cleaned = " ".join(text.split())
-        
-        if len(cleaned) <= self.snippet_max_length:
-            return cleaned
-        
-        # Truncate and add ellipsis
-        truncated = cleaned[:self.snippet_max_length].rsplit(" ", 1)[0]
-        return truncated + "..."
+        return text
     
     def format_citation_marker(self, index: int) -> str:
         """Format a citation marker for inline use.

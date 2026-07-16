@@ -46,6 +46,13 @@ async def test_official_sdk_stdio_client_session() -> None:
                 "list_documents",
                 "get_document_summary",
             }
+            query_tool = next(
+                tool for tool in tools_result.tools
+                if tool.name == "query_knowledge_hub"
+            )
+            assert query_tool.inputSchema["properties"]["response_format"]["default"] == "xml"
+            assert query_tool.outputSchema is not None
+            assert "results" in query_tool.outputSchema["properties"]
 
             collections_result = await session.call_tool(
                 "list_collections",
@@ -66,6 +73,12 @@ async def test_official_sdk_stdio_client_session() -> None:
                 {"query": "test query", "top_k": 2},
             )
             assert query_result.content
+            assert query_result.content[0].text.startswith("<retrieval_results")
+            assert query_result.structuredContent is not None
+            assert query_result.structuredContent["query"] == "test query"
+            assert query_result.structuredContent["result_count"] == len(
+                query_result.structuredContent["results"]
+            )
 
             summary_result = await session.call_tool(
                 "get_document_summary",

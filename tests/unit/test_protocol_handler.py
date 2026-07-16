@@ -10,7 +10,6 @@ Tests cover:
 from __future__ import annotations
 
 from typing import Any, Dict, List
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from mcp import types
@@ -194,6 +193,29 @@ class TestGetToolSchemas:
         assert schemas[0].name == "query_knowledge_hub"
         assert schemas[0].description == "Query the knowledge hub"
         assert schemas[0].inputSchema == sample_tool_schema
+
+    def test_returns_optional_output_schema(
+        self, protocol_handler: ProtocolHandler, sample_tool_schema: Dict[str, Any]
+    ) -> None:
+        async def handler(**kwargs: Any) -> str:
+            return "result"
+
+        output_schema = {
+            "type": "object",
+            "properties": {"results": {"type": "array"}},
+            "required": ["results"],
+        }
+        protocol_handler.register_tool(
+            name="search",
+            description="Search",
+            input_schema=sample_tool_schema,
+            handler=handler,
+            output_schema=output_schema,
+        )
+
+        schema = protocol_handler.get_tool_schemas()[0]
+
+        assert schema.outputSchema == output_schema
 
 
 # ============================================================================
@@ -474,7 +496,7 @@ class TestServerProtocolHandlerIntegration:
             handler=search_handler,
         )
 
-        server = create_mcp_server("test-server", "1.0.0", protocol_handler=handler)
+        create_mcp_server("test-server", "1.0.0", protocol_handler=handler)
 
         # Verify tools are accessible through protocol handler
         tools = handler.get_tool_schemas()
@@ -501,7 +523,7 @@ class TestServerProtocolHandlerIntegration:
             handler=search_handler,
         )
 
-        server = create_mcp_server("test-server", "1.0.0", protocol_handler=handler)
+        create_mcp_server("test-server", "1.0.0", protocol_handler=handler)
 
         # Execute through protocol handler
         result = await handler.execute_tool("search", {"query": "test", "top_k": 10})

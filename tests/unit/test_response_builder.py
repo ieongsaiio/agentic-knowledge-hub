@@ -4,8 +4,11 @@ This module tests the response building components used by MCP tools
 to generate formatted output with citations.
 """
 
+import json
+from xml.etree import ElementTree
+
 import pytest
-from typing import Dict, Any, List
+from typing import List
 
 from src.core.response.citation_generator import Citation, CitationGenerator
 from src.core.response.response_builder import ResponseBuilder, MCPToolResponse
@@ -128,22 +131,19 @@ class TestCitationGenerator:
         assert citation_dict["page"] == 5
         assert "text_snippet" in citation_dict
     
-    def test_text_snippet_truncation(self) -> None:
-        """Test that long text is truncated in snippets."""
+    def test_text_snippet_contains_full_text(self) -> None:
+        """Citation compatibility field must retain the complete chunk text."""
         generator = CitationGenerator(snippet_max_length=50)
-        
+        full_text = "这是一段非常长的文本，用于测试文本不会被截断。" * 10
         result = RetrievalResult(
             chunk_id="test_001",
             score=0.9,
-            text="这是一段非常长的文本，用于测试文本截断功能是否正常工作。" * 10,
+            text=full_text,
             metadata={"source_path": "test.pdf"},
         )
-        
         citations = generator.generate([result])
-        
-        # Snippet should be truncated
-        assert len(citations[0].text_snippet) <= 60  # 50 + "..."
-        assert citations[0].text_snippet.endswith("...")
+
+        assert citations[0].text_snippet == full_text
     
     def test_metadata_extraction(
         self,
@@ -245,8 +245,9 @@ class TestResponseBuilder:
         
         assert response.is_empty is True
         assert len(response.citations) == 0
-        assert "未找到相关结果" in response.content
-        assert "建议" in response.content
+        assert response.content.startswith("<retrieval_results")
+        assert response.structured_content["results"] == []
+        assert response.structured_content["is_empty"] is True
     
     def test_content_contains_citation_markers(
         self,
@@ -259,10 +260,9 @@ class TestResponseBuilder:
             query="Azure 配置",
         )
         
-        # Should contain citation markers
-        assert "[1]" in response.content
-        assert "[2]" in response.content
-        assert "[3]" in response.content
+        assert 'rank="1"' in response.content
+        assert 'rank="2"' in response.content
+        assert 'rank="3"' in response.content
     
     def test_content_contains_source_info(
         self,
@@ -290,8 +290,7 @@ class TestResponseBuilder:
             query="Azure",
         )
         
-        # Should contain score indicators
-        assert "相关度" in response.content or "95%" in response.content
+        assert '<score name="final" value="0.95"' in response.content
     
     def test_response_to_dict(
         self,
@@ -308,8 +307,10 @@ class TestResponseBuilder:
         
         assert "content" in response_dict
         assert "structuredContent" in response_dict
-        assert "citations" in response_dict["structuredContent"]
-        assert len(response_dict["structuredContent"]["citations"]) == 3
+        assert len(response_dict["structuredContent"]["results"]) == 3
+        assert response_dict["structuredContent"]["results"][0]["text"] == (
+            sample_retrieval_results[0].text
+        )
     
     def test_response_to_mcp_content(
         self,
@@ -330,10 +331,75 @@ class TestResponseBuilder:
         # Now returns TextContent objects instead of dicts
         assert isinstance(content_blocks[0], types.TextContent)
         assert content_blocks[0].type == "text"
-        assert "检索结果" in content_blocks[0].text
+        assert content_blocks[0].text.startswith("<retrieval_results")
+
+    def test_xml_default_round_trips_full_text(self) -> None:
+        full_text = "Revenue < costs & cash flow\n| 2018 | 2019 |"
+        result = RetrievalResult(
+            chunk_id="chunk_xml",
+            score=0.42,
+            text=full_text,
+            metadata={
+                "source_path": "report.pdf",
+                "source_ref": "doc_report",
+                "page_start": 48,
+                "page_end": 49,
+                "text": "duplicate storage text",
+            },
+        )
+
+        response = ResponseBuilder().build([result], query="cash & revenue")
+        root = ElementTree.fromstring(response.content)
+
+        assert root.tag == "retrieval_results"
+        assert root.findtext("./result/text") == full_text
+        assert root.find("./result/source").attrib == {
+            "doc_id": "doc_report",
+            "path": "report.pdf",
+            "page_start": "48",
+            "page_end": "49",
+        }
+        assert response.structured_content["results"][0]["text"] == full_text
+        assert "text" not in response.structured_content["results"][0]["metadata"]
+        xml_metadata = json.loads(root.findtext("./result/metadata"))
+        assert "text" not in xml_metadata
+
+    def test_json_response_format_uses_canonical_payload(self) -> None:
+        result = RetrievalResult(
+            chunk_id="chunk_json",
+            score=0.5,
+            text="complete text",
+            metadata={"source_path": "report.pdf"},
+        )
+
+        response = ResponseBuilder().build(
+            [result], query="query", response_format="json"
+        )
+
+        assert json.loads(response.content) == response.structured_content
+
+    def test_markdown_response_format_keeps_full_text(self) -> None:
+        full_text = "A" * 1000
+        result = RetrievalResult(
+            chunk_id="chunk_markdown",
+            score=0.5,
+            text=full_text,
+            metadata={"source_path": "report.pdf"},
+        )
+
+        response = ResponseBuilder(snippet_max_length=10).build(
+            [result], query="query", response_format="markdown"
+        )
+
+        assert full_text in response.content
+        assert "..." not in response.content
+
+    def test_invalid_response_format_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unsupported response_format"):
+            ResponseBuilder(default_response_format="yaml")
     
-    def test_max_results_in_content(self) -> None:
-        """Test that max_results_in_content is respected."""
+    def test_all_results_are_in_content(self) -> None:
+        """Legacy display limits must not hide retrieved evidence."""
         builder = ResponseBuilder(max_results_in_content=2)
         
         results = [
@@ -348,10 +414,8 @@ class TestResponseBuilder:
         
         response = builder.build(results=results, query="test")
         
-        # Content should mention that more results exist
-        assert "还有" in response.content or "未显示" in response.content
-        
-        # But all citations should still be included
+        assert response.content.count("<result ") == 5
+        assert len(response.structured_content["results"]) == 5
         assert len(response.citations) == 5
     
     def test_collection_in_metadata(
@@ -499,7 +563,7 @@ class TestResponseBuilderIntegration:
         assert not response.is_empty
         
         # Verify content
-        assert "检索结果" in response.content
+        assert response.content.startswith("<retrieval_results")
         assert "Azure" in response.content
         
         # Verify citations
@@ -532,9 +596,8 @@ class TestResponseBuilderIntegration:
             query="test",
         )
         
-        # Snippets should be shorter
-        for citation in response.citations:
-            assert len(citation.text_snippet) <= 60  # 50 + "..."
+        for citation, result in zip(response.citations, sample_retrieval_results):
+            assert citation.text_snippet == result.text
         
         # Only 'title' should be in metadata
         for citation in response.citations:

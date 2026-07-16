@@ -199,12 +199,94 @@ MCP Client 配置示例：
 
 | Tool | 作用 |
 |---|---|
-| `query_knowledge_hub` | 执行 Hybrid Search 和可选 Rerank，返回 Evidence Snippet、Citation 与可选图片 |
+| `query_knowledge_hub` | 执行 Hybrid Search 和可选 Rerank，返回完整 Chunk Text、来源、分数与可选图片 |
 | `list_collections` | 返回 Collection、文档数量和 Chunk 数量 |
 | `list_documents` | 返回指定 Collection 内的文档目录和 `doc_id` |
 | `get_document_summary` | 根据 `doc_id` 获取文档预览与元数据 |
 
 MCP Server 只提供知识检索工具，不直接生成最终答案。Copilot、Claude Desktop 或上层 Agent 会把 Tool Result 作为上下文，再生成面向用户的回答。
+
+`query_knowledge_hub` 默认使用 `response_format="xml"`。也可以选择 `json` 或
+`markdown`；该参数只控制 `TextContent` 的渲染格式。无论选择哪种格式，MCP
+`structuredContent` 都会返回同一份完整 JSON Payload，且所有格式都保留完整 Chunk
+Text，不进行 Snippet 截断：
+
+```json
+{
+  "query": "What was the reported revenue?",
+  "collection": "financebench",
+  "top_k": 5,
+  "response_format": "xml"
+}
+```
+
+### `query_knowledge_hub` 返回格式
+
+MCP Client 始终接收完整的 `CallToolResult`。`response_format` 只改变
+`content` 中的文本表现形式，不会关闭或改变 `structuredContent`：
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "<retrieval_results>...</retrieval_results>"
+    }
+  ],
+  "structuredContent": {
+    "query": "What was the reported revenue?",
+    "collection": "financebench",
+    "result_count": 1,
+    "results": [
+      {
+        "rank": 1,
+        "chunk_id": "doc_hash_source_hash_0001_content_hash",
+        "text": "Complete retrieved chunk text...",
+        "source": {
+          "doc_id": "doc_hash",
+          "path": "data/documents/report.pdf",
+          "page_start": 48,
+          "page_end": 49
+        },
+        "scores": {
+          "final": 0.91,
+          "original": 0.03,
+          "rerank": 0.91
+        },
+        "metadata": {
+          "title": "Cash Flow Statement",
+          "chunk_index": 84,
+          "start_offset": 199192,
+          "end_offset": 202457
+        }
+      }
+    ],
+    "has_images": false,
+    "image_count": 0,
+    "is_empty": false
+  },
+  "isError": false
+}
+```
+
+| 字段 | 用途 |
+|---|---|
+| `content` | 面向 LLM 或通用 MCP Host 的 Content Blocks；默认第一个 Block 是完整 XML，存在关联图片时追加 `ImageContent` |
+| `structuredContent` | 与 XML 来自同一 Canonical Payload 的完整 JSON，供 Agent State、Evidence Ledger、过滤和程序解析使用 |
+| `results[].text` | 未截断、未压缩空白的完整 Chunk Text，是回答问题的主要 Evidence |
+| `results[].source` | 文档 ID、来源路径以及 Chunk 覆盖的物理 PDF 页码范围 |
+| `results[].scores` | 最终分数，以及当前检索路径能够提供的原始、融合或重排分数 |
+| `results[].metadata` | 标题、Chunk Index、Offsets 和处理方式等辅助信息；不再重复返回 `text` |
+| `isError` | Tool 执行是否失败；无命中结果使用 `is_empty=true`，不等同于执行错误 |
+
+Chroma 内部将完整正文保存在 `documents` 字段，BM25 只保存词项统计、Chunk ID
+和评分信息。Sparse Retrieval 根据 BM25 返回的 Chunk ID 调用 Chroma
+`get_by_ids()`，再从 `documents` 取回正文。因此，MCP Response 删除重复的
+`metadata.text` 不会影响 Dense Retrieval、Sparse Retrieval 或 Rerank。
+
+对于自定义 Agent，推荐将 `content` 中的 XML 交给 LLM，将
+`structuredContent` 保存到 Global State；第三方 MCP Host 如何组装最终模型上下文，
+则由对应 Host 的实现决定。
 
 ## FinanceBench 评估
 

@@ -44,6 +44,7 @@ Parameters:
 - query: Your search question or keywords
 - top_k: Maximum number of results (default: 5)
 - collection: Limit search to a specific document collection
+- response_format: TextContent rendering format: xml, json, or markdown
 """
 
 TOOL_INPUT_SCHEMA: Dict[str, Any] = {
@@ -64,8 +65,64 @@ TOOL_INPUT_SCHEMA: Dict[str, Any] = {
             "type": "string",
             "description": "Optional collection name to limit the search scope.",
         },
+        "response_format": {
+            "type": "string",
+            "enum": ["xml", "json", "markdown"],
+            "default": "xml",
+            "description": (
+                "Rendering format for the TextContent block. "
+                "structuredContent always contains the complete JSON payload."
+            ),
+        },
     },
     "required": ["query"],
+}
+
+TOOL_OUTPUT_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string"},
+        "collection": {"type": ["string", "null"]},
+        "result_count": {"type": "integer", "minimum": 0},
+        "results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "rank": {"type": "integer", "minimum": 1},
+                    "chunk_id": {"type": "string"},
+                    "text": {"type": "string"},
+                    "source": {"type": "object"},
+                    "scores": {
+                        "type": "object",
+                        "additionalProperties": {"type": "number"},
+                    },
+                    "metadata": {"type": "object"},
+                },
+                "required": [
+                    "rank",
+                    "chunk_id",
+                    "text",
+                    "source",
+                    "scores",
+                    "metadata",
+                ],
+            },
+        },
+        "has_images": {"type": "boolean"},
+        "image_count": {"type": "integer", "minimum": 0},
+        "is_empty": {"type": "boolean"},
+        "error": {"type": "string"},
+    },
+    "required": [
+        "query",
+        "collection",
+        "result_count",
+        "results",
+        "has_images",
+        "image_count",
+        "is_empty",
+    ],
 }
 
 
@@ -221,6 +278,7 @@ class QueryKnowledgeHubTool:
         query: str,
         top_k: Optional[int] = None,
         collection: Optional[str] = None,
+        response_format: str = "xml",
     ) -> MCPToolResponse:
         """Execute the query_knowledge_hub tool.
         
@@ -228,6 +286,7 @@ class QueryKnowledgeHubTool:
             query: Search query string.
             top_k: Maximum results to return.
             collection: Target collection name.
+            response_format: TextContent rendering format.
             
         Returns:
             MCPToolResponse with formatted content and citations.
@@ -255,6 +314,7 @@ class QueryKnowledgeHubTool:
         trace.metadata["query"] = query[:200]
         trace.metadata["top_k"] = effective_top_k
         trace.metadata["collection"] = effective_collection
+        trace.metadata["response_format"] = response_format
         trace.metadata["source"] = "mcp"
 
         try:
@@ -286,6 +346,7 @@ class QueryKnowledgeHubTool:
                 results=results,
                 query=query,
                 collection=effective_collection,
+                response_format=response_format,
             )
             
             # Store final results in trace for dashboard display
@@ -312,7 +373,12 @@ class QueryKnowledgeHubTool:
             logger.exception(f"query_knowledge_hub failed: {e}")
             TraceCollector().collect(trace)
             # Return error response
-            return self._build_error_response(query, effective_collection, str(e))
+            return self._build_error_response(
+                query,
+                effective_collection,
+                str(e),
+                response_format,
+            )
     
     def _perform_search(
         self,
@@ -393,6 +459,7 @@ class QueryKnowledgeHubTool:
         query: str,
         collection: str,
         error_message: str,
+        response_format: str = "xml",
     ) -> MCPToolResponse:
         """Build error response.
         
@@ -404,24 +471,11 @@ class QueryKnowledgeHubTool:
         Returns:
             MCPToolResponse indicating error.
         """
-        content = f"## 查询失败\n\n"
-        content += f"查询: **{query}**\n"
-        content += f"集合: `{collection}`\n\n"
-        content += f"**错误信息:** {error_message}\n\n"
-        content += "请检查:\n"
-        content += "- 数据库连接是否正常\n"
-        content += "- 集合是否已创建并包含数据\n"
-        content += "- 配置文件是否正确\n"
-        
-        return MCPToolResponse(
-            content=content,
-            citations=[],
-            metadata={
-                "query": query,
-                "collection": collection,
-                "error": error_message,
-            },
-            is_empty=True,
+        return self._response_builder.build_error(
+            query=query,
+            collection=collection,
+            error_message=error_message,
+            response_format=response_format,
         )
 
 
@@ -448,6 +502,7 @@ async def query_knowledge_hub_handler(
     query: str,
     top_k: int = 5,
     collection: Optional[str] = None,
+    response_format: str = "xml",
 ) -> types.CallToolResult:
     """Handler function for MCP tool registration.
     
@@ -461,6 +516,7 @@ async def query_knowledge_hub_handler(
         query: Search query string.
         top_k: Maximum number of results.
         collection: Optional collection name.
+        response_format: TextContent rendering format.
         
     Returns:
         MCP CallToolResult with content blocks (text and optionally images).
@@ -472,6 +528,7 @@ async def query_knowledge_hub_handler(
             query=query,
             top_k=top_k,
             collection=collection,
+            response_format=response_format,
         )
         
         # Use to_mcp_content() which handles multimodal (text + images)
@@ -479,6 +536,7 @@ async def query_knowledge_hub_handler(
         
         return types.CallToolResult(
             content=content_blocks,
+            structuredContent=response.structured_content,
             isError=response.is_empty and "error" in response.metadata,
         )
         
@@ -500,7 +558,7 @@ async def query_knowledge_hub_handler(
             content=[
                 types.TextContent(
                     type="text",
-                    text=f"内部错误: 查询处理失败",
+                    text="内部错误: 查询处理失败",
                 )
             ],
             isError=True,
@@ -518,5 +576,6 @@ def register_tool(protocol_handler) -> None:
         description=TOOL_DESCRIPTION,
         input_schema=TOOL_INPUT_SCHEMA,
         handler=query_knowledge_hub_handler,
+        output_schema=TOOL_OUTPUT_SCHEMA,
     )
     logger.info(f"Registered MCP tool: {TOOL_NAME}")
