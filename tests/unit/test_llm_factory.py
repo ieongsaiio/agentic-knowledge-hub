@@ -16,6 +16,7 @@ def create_test_config(provider="fake", **overrides):
     base_config = {
         "llm": {
             "provider": provider,
+            "api_mode": "chat_completions",
             "model": "fake-model",
             "temperature": 0.0,
             "max_tokens": 1000,
@@ -156,6 +157,16 @@ class TestLLMFactory:
             "top_p": 0.8,
             "reasoning": {"enabled": True},
         }
+
+    def test_settings_loads_openai_api_mode(self, tmp_path):
+        config_file = tmp_path / "settings.yaml"
+        config_file.write_text(
+            create_test_config(provider="openai", **{"llm.api_mode": "responses"})
+        )
+
+        settings = load_settings(str(config_file))
+
+        assert settings.llm.api_mode == "responses"
     
     def test_create_provider_case_insensitive(self, tmp_path):
         """Test factory handles provider name case-insensitively."""

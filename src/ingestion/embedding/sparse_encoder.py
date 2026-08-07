@@ -108,13 +108,14 @@ class SparseEncoder:
         
         for i, chunk in enumerate(chunks):
             # Validate chunk text
-            if not chunk.text or not chunk.text.strip():
+            index_text = chunk.sparse_index_text or chunk.text
+            if not index_text or not index_text.strip():
                 raise ValueError(
                     f"Chunk at index {i} (id={chunk.id}) has empty or whitespace-only text"
                 )
             
             # Tokenize and count terms
-            terms = self._tokenize(chunk.text)
+            terms = self._tokenize(index_text)
             term_frequencies = Counter(terms)
             
             # Build statistics dict

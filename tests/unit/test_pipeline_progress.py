@@ -4,14 +4,11 @@ Verifies that IngestionPipeline.run() fires the optional on_progress
 callback at each pipeline stage with (stage_name, current, total).
 """
 
-from typing import List, Tuple
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.core.trace.trace_context import TraceContext
-from src.core.types import Document, Chunk
-from src.ingestion.pipeline import IngestionPipeline
+from src.core.types import Chunk, Document
+from src.ingestion.pipeline import IngestionPipeline, prepare_sparse_index_stats
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -69,15 +66,44 @@ def _make_fake_pipeline() -> object:
     return fp
 
 
-def _collect_progress(fp) -> List[Tuple[str, int, int]]:
+def _collect_progress(fp) -> list[tuple[str, int, int]]:
     """Run pipeline with a callback and return collected calls."""
-    calls: List[Tuple[str, int, int]] = []
+    calls: list[tuple[str, int, int]] = []
 
     def on_progress(stage: str, current: int, total: int) -> None:
         calls.append((stage, current, total))
 
     IngestionPipeline.run(fp, "test.pdf", on_progress=on_progress)
     return calls
+
+
+def test_prepare_sparse_index_stats_excludes_dense_only_summary() -> None:
+    chunks = [
+        Chunk(id="child", text="table child", metadata={"source_path": "test.pdf"}),
+        Chunk(
+            id="summary",
+            text="complete parent table",
+            metadata={
+                "source_path": "test.pdf",
+                "chunk_role": "table_summary",
+                "sparse_index_enabled": False,
+            },
+        ),
+    ]
+    sparse_stats = [
+        {"chunk_id": "child", "term_frequencies": {"table": 1}},
+        {"chunk_id": "summary", "term_frequencies": {"summary": 1}},
+    ]
+
+    prepared = prepare_sparse_index_stats(
+        chunks,
+        sparse_stats,
+        ["stored-child", "stored-summary"],
+    )
+
+    assert prepared == [
+        {"chunk_id": "stored-child", "term_frequencies": {"table": 1}}
+    ]
 
 
 # ── Tests ────────────────────────────────────────────────────────────
@@ -123,7 +149,7 @@ class TestPipelineProgressCallback:
     def test_callback_with_trace(self) -> None:
         """on_progress + trace both work together."""
         fp = _make_fake_pipeline()
-        calls: List[Tuple[str, int, int]] = []
+        calls: list[tuple[str, int, int]] = []
         trace = TraceContext(trace_type="ingestion")
 
         def on_progress(stage: str, current: int, total: int) -> None:

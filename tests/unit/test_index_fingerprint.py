@@ -197,9 +197,66 @@ def test_ingestion_chunk_size_and_embedding_model_affect_fingerprint() -> None:
         settings,
         embedding=replace(settings.embedding, model="embedding-model-v2"),
     )
+    changed_embedding_max_tokens = replace(
+        settings,
+        embedding=replace(settings.embedding, max_tokens=32768),
+    )
 
     assert build_index_fingerprint(changed_chunk_size) != baseline
     assert build_index_fingerprint(changed_embedding_model) != baseline
+    assert build_index_fingerprint(changed_embedding_max_tokens) != baseline
+
+
+def test_table_dense_representation_affects_fingerprint() -> None:
+    settings = _settings()
+    ingestion = settings.ingestion
+    assert ingestion is not None
+    linearized = replace(
+        settings,
+        ingestion=replace(
+            ingestion,
+            structured_chunking={
+                "table_dense_representation": "linearized",
+            },
+        ),
+    )
+    original = replace(
+        settings,
+        ingestion=replace(
+            ingestion,
+            structured_chunking={
+                "table_dense_representation": "original",
+            },
+        ),
+    )
+
+    assert build_index_fingerprint(original) != build_index_fingerprint(linearized)
+
+
+def test_table_child_budget_affects_fingerprint() -> None:
+    settings = _settings()
+    ingestion = settings.ingestion
+    assert ingestion is not None
+    budget_512 = replace(
+        settings,
+        ingestion=replace(
+            ingestion,
+            structured_chunking={
+                "table_child_chunking": {"enabled": True, "max_tokens": 512},
+            },
+        ),
+    )
+    budget_768 = replace(
+        settings,
+        ingestion=replace(
+            ingestion,
+            structured_chunking={
+                "table_child_chunking": {"enabled": True, "max_tokens": 768},
+            },
+        ),
+    )
+
+    assert build_index_fingerprint(budget_512) != build_index_fingerprint(budget_768)
 
 
 def test_llm_changes_only_affect_fingerprint_when_refinement_uses_llm() -> None:
@@ -228,6 +285,64 @@ def test_llm_changes_only_affect_fingerprint_when_refinement_uses_llm() -> None:
     assert build_index_fingerprint(changed_enabled_llm) != build_index_fingerprint(
         refinement_enabled
     )
+
+
+def test_global_llm_affects_fingerprint_when_table_summary_is_enabled() -> None:
+    settings = _settings()
+    ingestion = settings.ingestion
+    assert ingestion is not None
+    table_summary_enabled = replace(
+        settings,
+        ingestion=replace(
+            ingestion,
+            structured_chunking={
+                "embedding_max_tokens": 8192,
+                "table_summary": {"enabled": True},
+            },
+        ),
+    )
+    changed_llm = replace(
+        table_summary_enabled,
+        llm=replace(table_summary_enabled.llm, model="table-summary-model-v2"),
+    )
+
+    assert build_index_fingerprint(changed_llm) != build_index_fingerprint(
+        table_summary_enabled
+    )
+
+
+def test_nested_table_summary_model_affects_index_fingerprint() -> None:
+    settings = _settings()
+    ingestion = settings.ingestion
+    assert ingestion is not None
+    first = replace(
+        settings,
+        ingestion=replace(
+            ingestion,
+            structured_chunking={
+                "table_summary": {
+                    "enabled": True,
+                    "prompt_version": "v1",
+                    "llm": {"provider": "openai", "model": "summary-small"},
+                },
+            },
+        ),
+    )
+    second = replace(
+        first,
+        ingestion=replace(
+            first.ingestion,
+            structured_chunking={
+                "table_summary": {
+                    "enabled": True,
+                    "prompt_version": "v1",
+                    "llm": {"provider": "openai", "model": "summary-large"},
+                },
+            },
+        ),
+    )
+
+    assert build_index_fingerprint(first) != build_index_fingerprint(second)
 
 
 def test_vision_model_only_affects_fingerprint_when_vision_is_enabled() -> None:

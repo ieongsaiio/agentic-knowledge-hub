@@ -27,7 +27,7 @@ from src.observability.logger import get_logger
 
 # Libs layer imports
 from src.libs.loader.file_integrity import SQLiteIntegrityChecker
-from src.libs.loader.pdf_loader import PdfLoader
+from src.libs.loader.loader_factory import LoaderFactory
 from src.libs.loader.parsed_document_cache import ParsedDocumentCache
 from src.libs.embedding.embedding_factory import EmbeddingFactory
 from src.libs.vector_store.vector_store_factory import VectorStoreFactory
@@ -45,6 +45,22 @@ from src.ingestion.storage.vector_upserter import VectorUpserter
 from src.ingestion.storage.image_storage import ImageStorage
 
 logger = get_logger(__name__)
+
+
+def prepare_sparse_index_stats(
+    chunks: List[Chunk],
+    sparse_stats: List[Dict[str, Any]],
+    vector_ids: List[str],
+) -> List[Dict[str, Any]]:
+    """Align BM25 IDs and exclude records intended for dense retrieval only."""
+    if not (len(chunks) == len(sparse_stats) == len(vector_ids)):
+        raise ValueError("Chunk, sparse-stat, and vector-ID counts must match")
+    prepared: List[Dict[str, Any]] = []
+    for chunk, stat, vector_id in zip(chunks, sparse_stats, vector_ids):
+        stat["chunk_id"] = vector_id
+        if chunk.metadata.get("sparse_index_enabled", True) is not False:
+            prepared.append(stat)
+    return prepared
 
 
 class PipelineResult:
@@ -147,22 +163,23 @@ class IngestionPipeline:
         self.image_processing_enabled = bool(
             vision_settings is not None and getattr(vision_settings, "enabled", False)
         )
-        self.loader = PdfLoader(
-            extract_images=self.image_processing_enabled,
-            image_storage_dir=str(resolve_path(f"data/images/{collection}"))
+        self.loader = LoaderFactory.create(
+            settings,
+            image_storage_dir=str(resolve_path(f"data/images/{collection}")),
+        )
+        loader_provider = settings.ingestion.loader.provider
+        logger.info(
+            "  ✓ PDF loader initialized "
+            f"(provider={loader_provider}, images={self.image_processing_enabled})"
+        )
+        self.parsed_document_cache = ParsedDocumentCache(
+            cache_dir=settings.ingestion.loader.parsed_dir,
+            loader_config=self.loader.cache_config(),
         )
         logger.info(
-            "  ✓ PdfLoader initialized "
-            f"(extract_images={self.image_processing_enabled})"
+            "  ✓ ParsedDocumentCache initialized "
+            f"(dir={settings.ingestion.loader.parsed_dir})"
         )
-        self.parsed_document_cache = None
-        if not self.image_processing_enabled:
-            self.parsed_document_cache = ParsedDocumentCache(
-                loader_config=self.loader.cache_config()
-            )
-            logger.info(
-                "  ✓ ParsedDocumentCache initialized (dir=data/cache/parsed_documents)"
-            )
         
         # Stage 3: Chunker
         self.chunker = DocumentChunker(settings)
@@ -306,8 +323,13 @@ class IngestionPipeline:
                 "cache_hit": cache_hit,
             }
             if trace is not None:
+                loader_settings = getattr(
+                    getattr(getattr(self, "settings", None), "ingestion", None),
+                    "loader",
+                    None,
+                )
                 trace.record_stage("load", {
-                    "method": "markitdown",
+                    "method": getattr(loader_settings, "provider", "default"),
                     "doc_id": document.id,
                     "text_length": len(document.text),
                     "image_count": image_count,
@@ -383,11 +405,11 @@ class IngestionPipeline:
             else:
                 captioned = 0
                 logger.info("  4c. Image Captioning skipped (vision_llm.enabled=false)")
-            
+
             stages["transform"] = {
                 "chunk_refiner": {"llm": refined_by_llm, "rule": refined_by_rule},
                 "metadata_enricher": {"llm": enriched_by_llm, "rule": enriched_by_rule},
-                "image_captioner": {"captioned_chunks": captioned}
+                "image_captioner": {"captioned_chunks": captioned},
             }
             _elapsed_transform = (time.monotonic() - _t0_transform) * 1000.0
             if trace is not None:
@@ -420,7 +442,6 @@ class IngestionPipeline:
             logger.info("\n🔢 Stage 5: Encoding")
             _notify("embed", 5)
             
-            # Process through BatchProcessor
             _t0 = time.monotonic()
             batch_result = self.batch_processor.process(chunks, trace)
             _elapsed = (time.monotonic() - _t0) * 1000.0
@@ -475,23 +496,32 @@ class IngestionPipeline:
             # 6a: Vector Upsert
             logger.info("  6a. Vector Storage (ChromaDB)...")
             _t0_storage = time.monotonic()
-            vector_ids = self.vector_upserter.upsert(chunks, dense_vectors, trace)
+            vector_ids = self.vector_upserter.upsert(
+                chunks,
+                dense_vectors,
+                trace,
+            )
             logger.info(f"      Stored {len(vector_ids)} vectors")
 
-            # Align BM25 chunk_ids with Chroma vector IDs so the SparseRetriever
-            # can look up BM25 hits in the vector store after retrieval.
-            for stat, vid in zip(sparse_stats, vector_ids):
-                stat["chunk_id"] = vid
+            # Align BM25 IDs and omit dense-only supplemental vectors.
+            sparse_index_stats = prepare_sparse_index_stats(
+                chunks,
+                sparse_stats,
+                vector_ids,
+            )
 
             # 6b: BM25 Index
             logger.info("  6b. BM25 Index...")
             self.bm25_indexer.add_documents(
-                sparse_stats,
+                sparse_index_stats,
                 collection=self.collection,
                 doc_id=document.id,
                 trace=trace,
             )
-            logger.info(f"      Index built for {len(sparse_stats)} documents")
+            logger.info(
+                f"      Index built for {len(sparse_index_stats)} documents "
+                f"({len(sparse_stats) - len(sparse_index_stats)} dense-only skipped)"
+            )
             
             images = document.metadata.get("images", [])
             image_processing_enabled = getattr(self, "image_processing_enabled", True)
@@ -516,7 +546,8 @@ class IngestionPipeline:
             
             stages["storage"] = {
                 "vector_count": len(vector_ids),
-                "bm25_docs": len(sparse_stats),
+                "bm25_docs": len(sparse_index_stats),
+                "bm25_dense_only_skipped": len(sparse_stats) - len(sparse_index_stats),
                 "images_indexed": len(images)
             }
             _elapsed_storage = (time.monotonic() - _t0_storage) * 1000.0

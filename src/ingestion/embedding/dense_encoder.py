@@ -100,7 +100,7 @@ class DenseEncoder:
             raise ValueError("Cannot encode empty chunks list")
         
         # Extract text from chunks
-        texts = [chunk.text for chunk in chunks]
+        texts = [chunk.dense_index_text or chunk.text for chunk in chunks]
         
         # Validate that all texts are non-empty
         for i, text in enumerate(texts):

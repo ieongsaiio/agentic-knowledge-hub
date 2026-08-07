@@ -33,6 +33,8 @@ class Document:
             - page_count: Total pages (if applicable)
             - page_spans: Ingestion-only character ranges for each physical
               page; removed before Chunk metadata is persisted
+            - section_tree: Ingestion-only Markdown heading hierarchy used by
+              structural chunking; removed before Chunk metadata is persisted
             - images: List of image references (see Images Field Specification below)
             - Any other custom metadata
 
@@ -129,6 +131,8 @@ class Chunk:
     start_offset: Optional[int] = None
     end_offset: Optional[int] = None
     source_ref: Optional[str] = None
+    dense_index_text: Optional[str] = None
+    sparse_index_text: Optional[str] = None
 
     def __post_init__(self):
         """Validate required metadata fields."""

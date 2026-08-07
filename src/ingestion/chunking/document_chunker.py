@@ -114,7 +114,15 @@ class DocumentChunker:
             raise ValueError(f"Document {document.id} has no text content to split")
 
         # Step 1: Split text while retaining original character ranges.
-        fragments_with_offsets = self._split_with_offsets(document.text)
+        structured_split = getattr(self._splitter, "split_document", None)
+        structured_fragments = (
+            structured_split(document) if callable(structured_split) else None
+        )
+        fragments_with_offsets = (
+            structured_fragments
+            if structured_fragments is not None
+            else self._split_with_offsets(document.text)
+        )
 
         if not fragments_with_offsets:
             raise ValueError(
@@ -124,7 +132,19 @@ class DocumentChunker:
 
         # Step 2: Transform text fragments into Chunk objects with enrichment
         chunks: List[Chunk] = []
-        for index, (text, start_offset, end_offset) in enumerate(fragments_with_offsets):
+        for index, fragment in enumerate(fragments_with_offsets):
+            if isinstance(fragment, tuple):
+                text, start_offset, end_offset = fragment
+                dense_index_text = None
+                sparse_index_text = None
+                fragment_metadata = {}
+            else:
+                text = fragment.text
+                start_offset = fragment.start_offset
+                end_offset = fragment.end_offset
+                dense_index_text = fragment.dense_index_text
+                sparse_index_text = fragment.sparse_index_text
+                fragment_metadata = fragment.metadata
             chunk_id = self._generate_chunk_id(document.id, index, text)
             chunk_metadata = self._inherit_metadata(
                 document,
@@ -133,6 +153,7 @@ class DocumentChunker:
                 start_offset=start_offset,
                 end_offset=end_offset,
             )
+            chunk_metadata.update(fragment_metadata)
 
             chunk = Chunk(
                 id=chunk_id,
@@ -141,6 +162,8 @@ class DocumentChunker:
                 start_offset=start_offset,
                 end_offset=end_offset,
                 source_ref=document.id,
+                dense_index_text=dense_index_text,
+                sparse_index_text=sparse_index_text,
             )
             chunks.append(chunk)
 
@@ -262,6 +285,13 @@ class DocumentChunker:
         chunk_metadata.pop("images", None)
         # page_spans is an ingestion-only list and is not Chroma-compatible.
         chunk_metadata.pop("page_spans", None)
+        # PaddleOCR's complete page/block payload belongs to the parsed cache,
+        # not to every Chroma chunk. Page provenance is represented by the
+        # scalar page_start/page_end/page_num fields below.
+        chunk_metadata.pop("parsed_artifact", None)
+        # The complete loader-stage hierarchy is consumed by structural
+        # chunking and must not be duplicated into every Chroma record.
+        chunk_metadata.pop("section_tree", None)
 
         # Add chunk-specific fields
         chunk_metadata["chunk_index"] = chunk_index
@@ -324,11 +354,23 @@ class DocumentChunker:
         for span in page_spans:
             if not isinstance(span, dict):
                 continue
-            page = span.get("page")
             span_start = span.get("start_offset")
             span_end = span.get("end_offset")
-            if not all(isinstance(value, int) for value in (page, span_start, span_end)):
+            if not all(isinstance(value, int) for value in (span_start, span_end)):
                 continue
             if start_offset < span_end and end_offset > span_start:
-                pages.append(page)
-        return pages
+                page = span.get("page")
+                if isinstance(page, int) and not isinstance(page, bool):
+                    pages.append(page)
+                    continue
+                page_start = span.get("page_start")
+                page_end = span.get("page_end")
+                if (
+                    isinstance(page_start, int)
+                    and not isinstance(page_start, bool)
+                    and isinstance(page_end, int)
+                    and not isinstance(page_end, bool)
+                    and page_start <= page_end
+                ):
+                    pages.extend(range(page_start, page_end + 1))
+        return sorted(set(pages))

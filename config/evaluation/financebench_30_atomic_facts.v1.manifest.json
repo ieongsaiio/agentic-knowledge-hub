@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "provider": "financebench",
+  "split": "open_source",
+  "sample_size": 30,
+  "seed": 42,
+  "dataset_file": "financebench_open_source.jsonl",
+  "dataset_sha256": "a5a2aa673e573e55675fc3c0f9aa38c1cf59d2abc91edb077534f71f10a71877",
+  "sample_signature_sha256": "0601d0c950bd46b54df32a534ba58a26b183d33bb8fcf060e91f298b3651520d",
+  "annotation_file": "financebench_30_atomic_facts.v1.jsonl",
+  "annotation_sha256": "6403b43d1cece6f09e4614030811b430c2cfd692e0f877fb2467b4c620992f5a",
+  "generation_method": "one isolated subagent per question; unified deterministic validation"
+}

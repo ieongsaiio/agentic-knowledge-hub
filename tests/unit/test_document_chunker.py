@@ -263,6 +263,24 @@ def test_chunk_crossing_page_boundary_gets_page_range(
     assert "page_num" not in chunk.metadata
 
 
+def test_page_range_span_is_expanded_to_all_physical_pages(chunker):
+    """Merged Paddle tables retain every physical source page."""
+    pages = DocumentChunker._pages_for_offsets(
+        [
+            {
+                "page_start": 11,
+                "page_end": 12,
+                "start_offset": 100,
+                "end_offset": 300,
+            }
+        ],
+        120,
+        250,
+    )
+
+    assert pages == [11, 12]
+
+
 # =============================================================================
 # Test 3: chunk_index - Sequential Position Tracking
 # =============================================================================

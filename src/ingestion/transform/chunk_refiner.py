@@ -41,7 +41,7 @@ class ChunkRefiner(BaseTransform):
         self,
         settings: Settings,
         llm: Optional[BaseLLM] = None,
-        prompt_path: Optional[str] = None
+        prompt_path: Optional[str] = None,
     ):
         """Initialize ChunkRefiner.
         
@@ -57,8 +57,8 @@ class ChunkRefiner(BaseTransform):
         
         # Determine if LLM should be used
         self.use_llm = getattr(
-            getattr(settings, 'ingestion', None), 
-            'chunk_refiner', 
+            getattr(settings, 'ingestion', None),
+            'chunk_refiner',
             {}
         ).get('use_llm', False) if hasattr(settings, 'ingestion') else False
         
@@ -93,10 +93,11 @@ class ChunkRefiner(BaseTransform):
         
         # Process chunks in parallel if LLM is enabled
         if self.use_llm and self.llm:
-            return self._transform_parallel(chunks, trace)
+            refined = self._transform_parallel(chunks, trace)
         else:
-            return self._transform_sequential(chunks, trace)
-    
+            refined = self._transform_sequential(chunks, trace)
+        return refined
+
     def _refine_single_chunk(
         self, 
         chunk: Chunk, 
@@ -111,6 +112,13 @@ class ChunkRefiner(BaseTransform):
         Returns:
             Tuple of (refined_chunk, refined_by, error_message)
         """
+        if chunk.metadata.get("preserve_raw_content"):
+            preserved = self._copy_chunk(
+                chunk,
+                text=chunk.text,
+                metadata={**chunk.metadata, "refined_by": "skipped_structured"},
+            )
+            return (preserved, "skipped_structured", None)
         try:
             # Step 1: Rule-based refinement
             rule_refined_text = self._rule_based_refine(chunk.text)
@@ -136,7 +144,11 @@ class ChunkRefiner(BaseTransform):
                     **(chunk.metadata or {}),
                     'refined_by': refined_by
                 },
-                source_ref=chunk.source_ref
+                source_ref=chunk.source_ref,
+                start_offset=chunk.start_offset,
+                end_offset=chunk.end_offset,
+                dense_index_text=chunk.dense_index_text,
+                sparse_index_text=chunk.sparse_index_text,
             )
             return (refined_chunk, refined_by, None)
             
@@ -211,6 +223,19 @@ class ChunkRefiner(BaseTransform):
         fallback_count = 0
         
         for chunk in chunks:
+            if chunk.metadata.get("preserve_raw_content"):
+                refined_chunks.append(
+                    self._copy_chunk(
+                        chunk,
+                        text=chunk.text,
+                        metadata={
+                            **chunk.metadata,
+                            "refined_by": "skipped_structured",
+                        },
+                    )
+                )
+                success_count += 1
+                continue
             try:
                 # Step 1: Rule-based refinement (always performed)
                 rule_refined_text = self._rule_based_refine(chunk.text)
@@ -244,7 +269,11 @@ class ChunkRefiner(BaseTransform):
                         **(chunk.metadata or {}),
                         'refined_by': refined_by
                     },
-                    source_ref=chunk.source_ref
+                    source_ref=chunk.source_ref,
+                    start_offset=chunk.start_offset,
+                    end_offset=chunk.end_offset,
+                    dense_index_text=chunk.dense_index_text,
+                    sparse_index_text=chunk.sparse_index_text,
                 )
                 refined_chunks.append(refined_chunk)
                 success_count += 1
@@ -271,6 +300,24 @@ class ChunkRefiner(BaseTransform):
         )
         
         return refined_chunks
+
+    @staticmethod
+    def _copy_chunk(
+        chunk: Chunk,
+        *,
+        text: str,
+        metadata: dict,
+    ) -> Chunk:
+        return Chunk(
+            id=chunk.id,
+            text=text,
+            metadata=metadata,
+            source_ref=chunk.source_ref,
+            start_offset=chunk.start_offset,
+            end_offset=chunk.end_offset,
+            dense_index_text=chunk.dense_index_text,
+            sparse_index_text=chunk.sparse_index_text,
+        )
     
     def _rule_based_refine(self, text: str) -> str:
         """Apply rule-based text cleaning.

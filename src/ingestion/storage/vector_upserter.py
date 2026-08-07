@@ -121,9 +121,9 @@ class VectorUpserter:
             record = {
                 "id": chunk_id,
                 "vector": vector,
+                "document": chunk.text,
                 "metadata": {
                     **chunk.metadata,  # Preserve all original metadata
-                    "text": chunk.text,  # Store text for retrieval
                     "chunk_id": chunk_id,  # Redundant but useful for queries
                 },
             }
@@ -151,6 +151,10 @@ class VectorUpserter:
         Raises:
             ValueError: If required metadata fields are missing.
         """
+        explicit_storage_id = chunk.metadata.get("storage_id")
+        if isinstance(explicit_storage_id, str) and explicit_storage_id.strip():
+            return explicit_storage_id.strip()
+
         # Validate required metadata
         if "source_path" not in chunk.metadata:
             raise ValueError("Chunk metadata must contain 'source_path'")

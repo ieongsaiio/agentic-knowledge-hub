@@ -150,6 +150,38 @@ class TestEvalRunner:
         assert len(report.query_results) == 1
         assert report.query_results[0].retrieved_chunk_ids == ["c1"]
 
+    def test_reranker_receives_configured_fusion_candidates(self) -> None:
+        fused_results = [
+            MagicMock(chunk_id=f"c{index}", text=f"Chunk {index}", score=1.0)
+            for index in range(20)
+        ]
+        reranked_results = fused_results[:10]
+        mock_search = MagicMock()
+        mock_search.search.return_value = fused_results
+        mock_reranker = MagicMock()
+        mock_reranker.is_enabled = True
+        mock_reranker.rerank.return_value = SimpleNamespace(
+            results=reranked_results
+        )
+        settings = SimpleNamespace(
+            retrieval=SimpleNamespace(fusion_top_k=20)
+        )
+        runner = EvalRunner(
+            settings=settings,
+            hybrid_search=mock_search,
+            reranker=mock_reranker,
+            evaluator=StubEvaluator(),
+        )
+
+        results = runner._retrieve("query", top_k=10, collection=None)
+
+        mock_search.search.assert_called_once_with(query="query", top_k=20)
+        rerank_call = mock_reranker.rerank.call_args
+        assert rerank_call.kwargs["query"] == "query"
+        assert rerank_call.kwargs["results"] == fused_results
+        assert rerank_call.kwargs["top_k"] == 10
+        assert results == reranked_results
+
     def test_run_with_answer_generator(self, tmp_path: Path) -> None:
         f = tmp_path / "g.json"
         _write_golden_json(f, [{"query": "Q"}])
@@ -289,6 +321,66 @@ class TestEvalRunnerAggregation:
         # Each metric averaged over only the queries that produced it
         assert avg["hit_rate"] == 1.0
         assert avg["faithfulness"] == 0.9
+
+    def test_micro_metrics_use_evidence_count_weighting(self) -> None:
+        results = [
+            QueryResult(
+                query="q1",
+                metrics={
+                    "macro_evidence_hit_rate@5": 1.0,
+                    "micro_evidence_hit_rate@5": 1.0,
+                },
+                metric_weights={"micro_evidence_hit_rate@5": 1},
+            ),
+            QueryResult(
+                query="q2",
+                metrics={
+                    "macro_evidence_hit_rate@5": 1.0 / 3.0,
+                    "micro_evidence_hit_rate@5": 1.0 / 3.0,
+                },
+                metric_weights={"micro_evidence_hit_rate@5": 3},
+            ),
+        ]
+
+        aggregate = EvalRunner._aggregate_metrics(results)
+
+        assert aggregate["macro_evidence_hit_rate@5"] == pytest.approx(2.0 / 3.0)
+        assert aggregate["micro_evidence_hit_rate@5"] == pytest.approx(0.5)
+
+    def test_micro_context_precision_uses_retrieved_count_weighting(self) -> None:
+        results = [
+            QueryResult(
+                query="q1",
+                metrics={"micro_context_precision@5": 1.0},
+                metric_weights={"micro_context_precision@5": 1},
+            ),
+            QueryResult(
+                query="q2",
+                metrics={"micro_context_precision@5": 0.25},
+                metric_weights={"micro_context_precision@5": 4},
+            ),
+        ]
+
+        aggregate = EvalRunner._aggregate_metrics(results)
+
+        assert aggregate["micro_context_precision@5"] == pytest.approx(0.4)
+
+    def test_micro_context_precision_weight_is_actual_top_k_count(self) -> None:
+        case = GoldenTestCase(query="q", expected_evidence=["fact"])
+
+        weights = EvalRunner._metric_weights(
+            case,
+            {
+                "micro_context_precision@5": 0.5,
+                "micro_context_precision@10": 0.25,
+            },
+            retrieved_count=7,
+        )
+
+        assert weights == {
+            "micro_context_precision@5": 5,
+            "micro_context_precision@10": 7,
+        }
 
 
 # ── Tests: Golden test set fixture ────────────────────────────────

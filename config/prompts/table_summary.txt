@@ -1,0 +1,1 @@
+Write the shortest faithful table summary that remains as complete and useful for retrieval as possible. Identify the table subject, entities, periods, units, key metrics, important values, and explicit relationships likely to appear in questions. Use only the provided content. Do not calculate, infer, explain, or invent facts. Return concise plain text only.

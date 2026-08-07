@@ -1,0 +1,24 @@
+| (Amounts in millions) | | | | | | |
+| --------------------- | --- | --- | --- | --- | --- | --- |
+| Maturity Date | Principal Amount | Currency | Fixed vs. Floating | Interest Rate | | Repayment |
+| February 15, 2018 | | 1,250 | USD | Fixed | 5.800% | $ 1,250 |
+| April 11, 2018 | | 1,250 | USD | Fixed | 1.125% | 1,250 |
+| June 1, 2018 | | 500 | USD | Floating | Floating | 500 |
+| December 15, 2018 | | 724 | USD | Fixed | 1.950% | 724 |
+| Various (1) | | 60 | USD | Various | Various | 60 |
+| Total | | | | | $ | 3,784 |
+| April 5, 2017 | | 1,000 | USD | Fixed | 5.375% | $ 1,000 |
+| April 21, 2017 | | 500 | USD | Fixed | 1.000% | 500 |
+| Various (1) | | 289 | USD | Various | Various | 289 |
+| Total repayment of matured debt | | | | | | 1,789 |
+| December 15, 2018 | | 1,000 | USD | Fixed | 1.950% | $ 276 |
+| February 1, 2019 | | 500 | USD | Fixed | 4.125% | 136 |
+| July 8, 2020 | | 1,500 | USD | Fixed | 3.625% | 661 |
+| October 25, 2020 | | 1,750 | USD | Fixed | 3.250% | 553 |
+| April 15, 2021 | | 1,000 | USD | Fixed | 4.250% | 491 |
+| October 16, 2023 | | 250 | USD | Fixed | 6.750% | 98 |
+| April 5, 2027 | | 750 | USD | Fixed | 5.875% | 267 |
+| February 15, 2030 | | 500 | USD | Fixed | 7.550% | 412 |
+| September 4, 2035 | | 2,500 | USD | Fixed | 5.250% | 532 |
+| September 28, 2035 | | 1,000 | GBP | Fixed | 5.250% | 260 |
+| August 17, 2037 | | 3,000 | USD | Fixed | 6.500% | 1,700 |

@@ -111,6 +111,8 @@ class LLMSettings:
     model: str
     temperature: float
     max_tokens: int
+    # OpenAI text generation API surface.
+    api_mode: str = "chat_completions"
     # Azure/OpenAI-specific optional fields
     api_key: Optional[str] = None
     api_version: Optional[str] = None
@@ -127,6 +129,7 @@ class EmbeddingSettings:
     provider: str
     model: str
     dimensions: int
+    max_tokens: int = 8192
     # Azure-specific optional fields
     api_key: Optional[str] = None
     api_version: Optional[str] = None
@@ -228,6 +231,36 @@ class VisionLLMSettings:
 
 
 @dataclass(frozen=True)
+class PdfLoaderSettings:
+    provider: str = "default"
+    parsed_dir: str = "./data/parsed"
+    paddle: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.provider not in {"default", "paddle"}:
+            raise SettingsError(
+                "ingestion.loader.provider must be one of: default, paddle"
+            )
+        if self.provider == "paddle":
+            backend = str(
+                self.paddle.get(
+                    "backend",
+                    self.paddle.get("execution", "docker"),
+                )
+            ).lower()
+            if backend not in {"docker", "api"}:
+                raise SettingsError(
+                    "ingestion.loader.paddle.backend must be one of: docker, api"
+                )
+            for section in ("docker", "api"):
+                value = self.paddle.get(section)
+                if value is not None and not isinstance(value, dict):
+                    raise SettingsError(
+                        f"ingestion.loader.paddle.{section} must be a mapping"
+                    )
+
+
+@dataclass(frozen=True)
 class IngestionSettings:
     chunk_size: int
     chunk_overlap: int
@@ -235,8 +268,10 @@ class IngestionSettings:
     batch_size: int
     length_unit: str = "characters"
     tokenizer_model: Optional[str] = None
+    structured_chunking: Optional[Dict[str, Any]] = None
     chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
+    loader: PdfLoaderSettings = field(default_factory=PdfLoaderSettings)
 
 
 @dataclass(frozen=True)
@@ -339,6 +374,7 @@ class Settings:
         ingestion_settings = None
         if "ingestion" in data:
             ingestion = _require_mapping(data, "ingestion", "settings")
+            loader = _optional_mapping(ingestion, "loader", "ingestion")
             ingestion_settings = IngestionSettings(
                 chunk_size=_require_int(ingestion, "chunk_size", "ingestion"),
                 chunk_overlap=_require_int(ingestion, "chunk_overlap", "ingestion"),
@@ -354,8 +390,22 @@ class Settings:
                     if ingestion.get("tokenizer_model") is not None
                     else None
                 ),
+                structured_chunking=ingestion.get("structured_chunking"),
                 chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
+                loader=PdfLoaderSettings(
+                    provider=(
+                        _require_str(loader, "provider", "ingestion.loader")
+                        if "provider" in loader
+                        else "default"
+                    ),
+                    parsed_dir=(
+                        _require_str(loader, "parsed_dir", "ingestion.loader")
+                        if "parsed_dir" in loader
+                        else "./data/parsed"
+                    ),
+                    paddle=_optional_mapping(loader, "paddle", "ingestion.loader"),
+                ),
             )
 
         vision_llm_settings = None
@@ -379,6 +429,7 @@ class Settings:
                 model=_require_str(llm, "model", "llm"),
                 temperature=_require_number(llm, "temperature", "llm"),
                 max_tokens=_require_int(llm, "max_tokens", "llm"),
+                api_mode=str(llm.get("api_mode", "chat_completions")).strip().lower(),
                 api_key=llm.get("api_key"),
                 api_version=llm.get("api_version"),
                 azure_endpoint=llm.get("azure_endpoint"),
@@ -393,6 +444,11 @@ class Settings:
                 provider=_require_str(embedding, "provider", "embedding"),
                 model=_require_str(embedding, "model", "embedding"),
                 dimensions=_require_int(embedding, "dimensions", "embedding"),
+                max_tokens=(
+                    _require_int(embedding, "max_tokens", "embedding")
+                    if "max_tokens" in embedding
+                    else 8192
+                ),
                 api_key=embedding.get("api_key"),
                 api_version=embedding.get("api_version"),
                 azure_endpoint=embedding.get("azure_endpoint"),
@@ -466,8 +522,14 @@ def validate_settings(settings: Settings) -> None:
 
     if not settings.llm.provider:
         raise SettingsError("Missing required field: llm.provider")
+    if settings.llm.api_mode not in {"chat_completions", "responses"}:
+        raise SettingsError(
+            "llm.api_mode must be one of: chat_completions, responses"
+        )
     if not settings.embedding.provider:
         raise SettingsError("Missing required field: embedding.provider")
+    if settings.embedding.max_tokens <= 0:
+        raise SettingsError("embedding.max_tokens must be greater than zero")
     if not settings.vector_store.provider:
         raise SettingsError("Missing required field: vector_store.provider")
     if not settings.retrieval.rrf_k:
@@ -495,6 +557,144 @@ def validate_settings(settings: Settings) -> None:
                 "ingestion.tokenizer_model is required when "
                 "ingestion.length_unit is 'tokens'"
             )
+        structured_chunking = settings.ingestion.structured_chunking
+        if structured_chunking is not None:
+            if not isinstance(structured_chunking, dict):
+                raise SettingsError(
+                    "ingestion.structured_chunking must be a mapping"
+                )
+            table_representation = str(
+                structured_chunking.get(
+                    "table_dense_representation",
+                    "linearized",
+                )
+            ).strip().lower()
+            if table_representation not in {"linearized", "original"}:
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_dense_representation "
+                    "must be one of: linearized, original"
+                )
+            table_context_tokens = structured_chunking.get(
+                "table_context_tokens",
+                80,
+            )
+            if (
+                not isinstance(table_context_tokens, int)
+                or isinstance(table_context_tokens, bool)
+                or table_context_tokens < 0
+            ):
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_context_tokens "
+                    "must be a non-negative integer"
+                )
+            table_child_chunking = structured_chunking.get(
+                "table_child_chunking",
+                {},
+            )
+            if not isinstance(table_child_chunking, dict):
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_child_chunking "
+                    "must be a mapping"
+                )
+            child_max_tokens = table_child_chunking.get("max_tokens", 768)
+            if (
+                not isinstance(child_max_tokens, int)
+                or isinstance(child_max_tokens, bool)
+                or child_max_tokens <= 0
+            ):
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_child_chunking."
+                    "max_tokens must be greater than zero"
+                )
+            for field_name, default in (
+                ("overlap_rows", 1),
+                ("repeated_context_rows", 2),
+            ):
+                value = table_child_chunking.get(field_name, default)
+                if (
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or value < 0
+                ):
+                    raise SettingsError(
+                        "ingestion.structured_chunking.table_child_chunking."
+                        f"{field_name} must be a non-negative integer"
+                    )
+            table_summary = structured_chunking.get("table_summary", {})
+            if not isinstance(table_summary, dict):
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_summary must be a mapping"
+                )
+            summary_enabled = table_summary.get("enabled", False)
+            if not isinstance(summary_enabled, bool):
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_summary.enabled "
+                    "must be a boolean"
+                )
+            prompt_path = table_summary.get(
+                "prompt_path",
+                "config/prompts/table_summary.txt",
+            )
+            if not isinstance(prompt_path, str) or not prompt_path.strip():
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_summary.prompt_path "
+                    "must be a non-empty string"
+                )
+            summary_llm = table_summary.get("llm", {})
+            if not isinstance(summary_llm, dict):
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_summary.llm "
+                    "must be a mapping"
+                )
+            allowed_llm_fields = set(LLMSettings.__dataclass_fields__)
+            unknown_llm_fields = set(summary_llm) - allowed_llm_fields
+            if unknown_llm_fields:
+                unknown = ", ".join(sorted(unknown_llm_fields))
+                raise SettingsError(
+                    "Unknown ingestion.structured_chunking.table_summary.llm "
+                    f"fields: {unknown}"
+                )
+            if "max_tokens" in summary_llm and (
+                not isinstance(summary_llm["max_tokens"], int)
+                or isinstance(summary_llm["max_tokens"], bool)
+                or summary_llm["max_tokens"] <= 0
+            ):
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_summary.llm.max_tokens "
+                    "must be greater than zero"
+                )
+            if "temperature" in summary_llm and (
+                not isinstance(summary_llm["temperature"], (int, float))
+                or isinstance(summary_llm["temperature"], bool)
+            ):
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_summary.llm.temperature "
+                    "must be a number"
+                )
+            if "extra_chat_configs" in summary_llm and not isinstance(
+                summary_llm["extra_chat_configs"],
+                dict,
+            ):
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_summary.llm."
+                    "extra_chat_configs must be a mapping"
+                )
+            summary_workers = table_summary.get("max_workers", 5)
+            if (
+                not isinstance(summary_workers, int)
+                or isinstance(summary_workers, bool)
+                or summary_workers <= 0
+            ):
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_summary.max_workers "
+                    "must be greater than zero"
+                )
+            fail_on_error = table_summary.get("fail_on_error", False)
+            if not isinstance(fail_on_error, bool):
+                raise SettingsError(
+                    "ingestion.structured_chunking.table_summary.fail_on_error "
+                    "must be a boolean"
+                )
 
 
 def load_settings(path: str | Path | None = None) -> Settings:

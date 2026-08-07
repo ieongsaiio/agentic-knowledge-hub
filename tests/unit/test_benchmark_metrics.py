@@ -8,6 +8,7 @@ from src.libs.benchmark.base_benchmark import BenchmarkCase, BenchmarkEvidence
 from src.observability.evaluation.benchmark_metrics import (
     BenchmarkMetrics,
     aggregate,
+    evidence_candidate_ranks,
     normalize_document_name,
 )
 
@@ -182,6 +183,49 @@ def test_page_hit_rate_scores_fraction_of_reference_evidence_pages() -> None:
     }
 
 
+def test_evidence_candidates_require_matching_document_and_page() -> None:
+    case = _case(
+        evidences=[
+            BenchmarkEvidence(
+                document_name="Annual Report.pdf",
+                page_number=7,
+                text="Revenue increased.",
+            ),
+            BenchmarkEvidence(
+                document_name="Annual Report.pdf",
+                page_number=9,
+                text="Operating income declined.",
+            ),
+        ]
+    )
+    retrieved = [
+        {
+            "metadata": {
+                "filename": "wrong.pdf",
+                "page_start": 7,
+                "page_end": 7,
+            }
+        },
+        {
+            "metadata": {
+                "filename": "annual report.pdf",
+                "page_start": 6,
+                "page_end": 8,
+            }
+        },
+        {
+            "metadata": {
+                "filename": "annual report.pdf",
+                "page_start": 9,
+                "page_end": 10,
+            }
+        },
+        {"metadata": {"filename": "annual report.pdf"}},
+    ]
+
+    assert evidence_candidate_ranks(case, retrieved) == ((2,), (3,))
+
+
 def test_evidence_hit_rate_uses_coverage_and_mrr_uses_earliest_match() -> None:
     evidences = [
         BenchmarkEvidence(
@@ -193,10 +237,10 @@ def test_evidence_hit_rate_uses_coverage_and_mrr_uses_earliest_match() -> None:
     ]
     result = BenchmarkMetrics(
         [
-            "evidence_hit_rate@3",
-            "evidence_hit_rate@5",
-            "evidence_mrr@3",
-            "evidence_mrr@5",
+            "macro_evidence_hit_rate@3",
+            "micro_evidence_hit_rate@5",
+            "macro_evidence_mrr@3",
+            "macro_evidence_mrr@5",
         ]
     ).evaluate_case(
         _case(evidences=evidences),
@@ -206,11 +250,52 @@ def test_evidence_hit_rate_uses_coverage_and_mrr_uses_earliest_match() -> None:
     )
 
     assert result == {
-        "evidence_hit_rate@3": pytest.approx(1.0 / 3.0),
-        "evidence_hit_rate@5": pytest.approx(2.0 / 3.0),
-        "evidence_mrr@3": 0.5,
-        "evidence_mrr@5": 0.5,
+        "macro_evidence_hit_rate@3": pytest.approx(1.0 / 3.0),
+        "micro_evidence_hit_rate@5": pytest.approx(2.0 / 3.0),
+        "macro_evidence_mrr@3": 0.5,
+        "macro_evidence_mrr@5": 0.5,
     }
+
+
+def test_context_recall_uses_atomic_fact_completion_ranks() -> None:
+    result = BenchmarkMetrics(["macro_context_recall@5", "macro_context_recall@7"]).evaluate_case(
+        _case(),
+        retrieved=[{"text": f"chunk {index}"} for index in range(1, 8)],
+        answer=None,
+        fact_ranks=(2, 6, None),
+    )
+
+    assert result == {
+        "macro_context_recall@5": pytest.approx(1.0 / 3.0),
+        "macro_context_recall@7": pytest.approx(2.0 / 3.0),
+    }
+
+
+def test_context_precision_uses_relevant_chunks_within_cutoff() -> None:
+    result = BenchmarkMetrics(
+        ["context_precision@3", "macro_context_precision@5"]
+    ).evaluate_case(
+        _case(),
+        retrieved=[{"text": f"chunk {index}"} for index in range(1, 5)],
+        answer=None,
+        context_relevant_ranks=(2, 4, 9),
+    )
+
+    assert result == {
+        "context_precision@3": pytest.approx(1.0 / 3.0),
+        "macro_context_precision@5": pytest.approx(2.0 / 4.0),
+    }
+
+
+def test_context_precision_is_zero_for_empty_retrieval() -> None:
+    result = BenchmarkMetrics(["micro_context_precision@5"]).evaluate_case(
+        _case(),
+        retrieved=[],
+        answer=None,
+        context_relevant_ranks=(),
+    )
+
+    assert result == {"micro_context_precision@5": 0.0}
 
 
 def test_answer_exact_match_normalizes_case_punctuation_and_whitespace() -> None:

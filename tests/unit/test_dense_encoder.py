@@ -102,6 +102,22 @@ def test_encode_single_chunk():
     assert embedding.call_history[0] == ["Hello world"]
 
 
+def test_encode_prefers_dense_index_text_but_keeps_raw_chunk_text():
+    embedding = FakeEmbedding(dimension=4)
+    encoder = DenseEncoder(embedding, batch_size=10)
+    chunk = Chunk(
+        id="1",
+        text="| Revenue | 100 |",
+        dense_index_text="Columns: Item | Value\nRow: Item=Revenue; Value=100",
+        metadata={"source_path": "test.pdf"},
+    )
+
+    encoder.encode([chunk])
+
+    assert embedding.call_history[0] == [chunk.dense_index_text]
+    assert chunk.text == "| Revenue | 100 |"
+
+
 def test_encode_multiple_chunks():
     """Test encoding multiple chunks in single batch."""
     embedding = FakeEmbedding(dimension=8)

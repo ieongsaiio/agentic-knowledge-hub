@@ -60,6 +60,7 @@ class MockLLMSettings:
     model: str = "gpt-4o-mini"
     temperature: float = 0.0
     max_tokens: int = 1024
+    api_mode: str = "chat_completions"
     api_key: str = None
     base_url: str = None
     extra_chat_configs: Dict[str, Any] = None
@@ -119,6 +120,33 @@ def make_error_response(
         }
     }
     response.text = f"Error: {error_message}"
+    return response
+
+
+def make_responses_mock_response(
+    content: str = "Responses API result",
+    model: str = "gpt-4o-mini",
+) -> MagicMock:
+    """Create a mock raw Responses API HTTP response."""
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {
+        "id": "resp_123",
+        "object": "response",
+        "model": model,
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": content}],
+            }
+        ],
+        "usage": {
+            "input_tokens": 11,
+            "output_tokens": 7,
+            "total_tokens": 18,
+        },
+    }
     return response
 
 
@@ -228,6 +256,51 @@ class TestOpenAILLM:
             assert response.content == "Test response"
             assert response.model == "gpt-4o-mini"
             assert response.usage["total_tokens"] == 30
+
+    def test_chat_completions_uses_existing_endpoint_and_payload(self):
+        settings = MockSettings(
+            llm=MockLLMSettings(api_mode="chat_completions")
+        )
+        llm = OpenAILLM(settings, api_key="test-key")
+
+        with patch("httpx.Client") as mock_client:
+            post = mock_client.return_value.__enter__.return_value.post
+            post.return_value = make_mock_response()
+            llm.chat([Message(role="user", content="Hello")])
+
+        url = post.call_args.args[0]
+        payload = post.call_args.kwargs["json"]
+        assert url.endswith("/chat/completions")
+        assert payload["messages"] == [{"role": "user", "content": "Hello"}]
+        assert payload["max_tokens"] == 1024
+        assert "input" not in payload
+
+    def test_responses_mode_uses_responses_contract(self):
+        settings = MockSettings(llm=MockLLMSettings(api_mode="responses"))
+        llm = OpenAILLM(settings, api_key="test-key")
+
+        with patch("httpx.Client") as mock_client:
+            post = mock_client.return_value.__enter__.return_value.post
+            post.return_value = make_responses_mock_response("Response text")
+            response = llm.chat([Message(role="user", content="Hello")])
+
+        url = post.call_args.args[0]
+        payload = post.call_args.kwargs["json"]
+        assert url.endswith("/responses")
+        assert payload["input"] == [{"role": "user", "content": "Hello"}]
+        assert payload["max_output_tokens"] == 1024
+        assert "messages" not in payload
+        assert response.content == "Response text"
+        assert response.usage == {
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18,
+        }
+
+    def test_rejects_unknown_api_mode(self):
+        settings = MockSettings(llm=MockLLMSettings(api_mode="completion"))
+        with pytest.raises(ValueError, match="api_mode"):
+            OpenAILLM(settings, api_key="test-key")
 
     def test_chat_empty_messages_error(self):
         """Should raise ValueError for empty messages list."""

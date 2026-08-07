@@ -70,6 +70,22 @@ def test_encode_single_chunk():
     assert results[0]["unique_terms"] == 2
 
 
+def test_encode_prefers_sparse_index_text_but_keeps_raw_chunk_text():
+    encoder = SparseEncoder()
+    chunk = Chunk(
+        id="1",
+        text="raw markdown table",
+        sparse_index_text="Revenue 2023 100",
+        metadata={"source_path": "test.txt"},
+    )
+
+    result = encoder.encode([chunk])[0]
+
+    assert "revenue" in result["term_frequencies"]
+    assert "raw" not in result["term_frequencies"]
+    assert chunk.text == "raw markdown table"
+
+
 def test_encode_multiple_chunks():
     """Test encoding multiple chunks."""
     encoder = SparseEncoder()

@@ -89,7 +89,7 @@ class PdfLoader(BaseLoader):
         return {
             "loader": "PdfLoader",
             "parser": "markitdown",
-            "loader_schema_version": 1,
+            "loader_schema_version": 2,
             "extract_images": self.extract_images,
             "markitdown_version": markitdown_version,
             "pymupdf_available": PYMUPDF_AVAILABLE,
@@ -160,7 +160,8 @@ class PdfLoader(BaseLoader):
                     f"Image extraction failed for {path}, continuing with text-only: {e}"
                 )
 
-        return Document(id=doc_id, text=text_content, metadata=metadata)
+        document = Document(id=doc_id, text=text_content, metadata=metadata)
+        return self._attach_section_tree(document)
 
     def _extract_page_texts(
         self,

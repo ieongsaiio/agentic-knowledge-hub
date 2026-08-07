@@ -151,7 +151,11 @@ class MetadataEnricher(BaseTransform):
                 id=chunk.id,
                 text=chunk.text,
                 metadata=final_metadata,
-                source_ref=chunk.source_ref
+                source_ref=chunk.source_ref,
+                start_offset=chunk.start_offset,
+                end_offset=chunk.end_offset,
+                dense_index_text=chunk.dense_index_text,
+                sparse_index_text=chunk.sparse_index_text,
             )
             return (enriched_chunk, enriched_by, None)
             
@@ -172,7 +176,11 @@ class MetadataEnricher(BaseTransform):
                 id=chunk.id,
                 text=chunk.text or "",
                 metadata=minimal_metadata,
-                source_ref=chunk.source_ref
+                source_ref=chunk.source_ref,
+                start_offset=chunk.start_offset,
+                end_offset=chunk.end_offset,
+                dense_index_text=chunk.dense_index_text,
+                sparse_index_text=chunk.sparse_index_text,
             )
             return (enriched_chunk, "error", str(e))
     
@@ -277,7 +285,11 @@ class MetadataEnricher(BaseTransform):
                     id=chunk.id,
                     text=chunk.text,
                     metadata=final_metadata,
-                    source_ref=chunk.source_ref
+                    source_ref=chunk.source_ref,
+                    start_offset=chunk.start_offset,
+                    end_offset=chunk.end_offset,
+                    dense_index_text=chunk.dense_index_text,
+                    sparse_index_text=chunk.sparse_index_text,
                 )
                 enriched_chunks.append(enriched_chunk)
                 success_count += 1
@@ -301,7 +313,11 @@ class MetadataEnricher(BaseTransform):
                     id=chunk.id,
                     text=chunk.text or "",  # Ensure text is not None
                     metadata=minimal_metadata,
-                    source_ref=chunk.source_ref
+                    source_ref=chunk.source_ref,
+                    start_offset=chunk.start_offset,
+                    end_offset=chunk.end_offset,
+                    dense_index_text=chunk.dense_index_text,
+                    sparse_index_text=chunk.sparse_index_text,
                 )
                 enriched_chunks.append(enriched_chunk)
         

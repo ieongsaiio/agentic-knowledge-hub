@@ -25,6 +25,7 @@ def test_load_settings_success(tmp_path: Path) -> None:
       provider: openai
       model: text-embedding-3-small
       dimensions: 1536
+      max_tokens: 32768
     vector_store:
       provider: chroma
       persist_directory: ./data/db/chroma
@@ -62,7 +63,9 @@ def test_load_settings_success(tmp_path: Path) -> None:
     settings = load_settings(settings_path)
 
     assert settings.llm.provider == "openai"
+    assert settings.llm.api_mode == "chat_completions"
     assert settings.embedding.dimensions == 1536
+    assert settings.embedding.max_tokens == 32768
     assert settings.vector_store.collection_name == "knowledge_hub"
     assert settings.retrieval.rrf_k == 60
     assert settings.retrieval.enable_dense is True
@@ -76,6 +79,198 @@ def test_load_settings_success(tmp_path: Path) -> None:
     assert settings.ingestion is not None
     assert settings.ingestion.length_unit == "characters"
     assert settings.ingestion.tokenizer_model is None
+    assert settings.ingestion.loader.provider == "default"
+    assert settings.ingestion.loader.parsed_dir == "./data/parsed"
+
+
+def test_rejects_unknown_openai_api_mode(tmp_path: Path) -> None:
+    config = """
+    llm: {provider: openai, model: gpt-4o-mini, api_mode: completion, temperature: 0.0, max_tokens: 1024}
+    embedding: {provider: openai, model: text-embedding-3-small, dimensions: 1536}
+    vector_store: {provider: chroma, persist_directory: ./data/db/chroma, collection_name: test}
+    retrieval: {dense_top_k: 20, sparse_top_k: 20, fusion_top_k: 10, rrf_k: 60}
+    rerank: {enabled: false, provider: none, model: "", top_k: 5}
+    evaluation: {enabled: false, provider: custom, metrics: [hit_rate]}
+    observability:
+      {log_level: INFO, trace_enabled: false, trace_file: ./logs/test.jsonl,
+       structured_logging: true}
+    """
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(settings_path, config)
+
+    with pytest.raises(
+        SettingsError,
+        match="llm.api_mode must be one of: chat_completions, responses",
+    ):
+        load_settings(settings_path)
+
+
+def test_rejects_unknown_table_dense_representation(tmp_path: Path) -> None:
+    config = """
+    llm: {provider: openai, model: gpt-4o-mini, temperature: 0.0, max_tokens: 1024}
+    embedding: {provider: openai, model: text-embedding-3-small, dimensions: 1536}
+    vector_store: {provider: chroma, persist_directory: ./data/db/chroma, collection_name: test}
+    retrieval: {dense_top_k: 20, sparse_top_k: 20, fusion_top_k: 10, rrf_k: 60}
+    rerank: {enabled: false, provider: none, model: "", top_k: 5}
+    evaluation: {enabled: false, provider: custom, metrics: [hit_rate]}
+    observability:
+      {log_level: INFO, trace_enabled: false, trace_file: ./logs/test.jsonl,
+       structured_logging: true}
+    ingestion:
+      splitter: structured_markdown
+      chunk_size: 512
+      chunk_overlap: 100
+      batch_size: 16
+      structured_chunking:
+        table_dense_representation: unsupported
+    """
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(settings_path, config)
+
+    with pytest.raises(
+        SettingsError,
+        match="table_dense_representation must be one of: linearized, original",
+    ):
+        load_settings(settings_path)
+
+
+def test_rejects_invalid_table_child_token_budget(tmp_path: Path) -> None:
+    config = """
+    llm: {provider: openai, model: gpt-4o-mini, temperature: 0.0, max_tokens: 1024}
+    embedding: {provider: openai, model: text-embedding-3-small, dimensions: 1536}
+    vector_store: {provider: chroma, persist_directory: ./data/db/chroma, collection_name: test}
+    retrieval: {dense_top_k: 20, sparse_top_k: 20, fusion_top_k: 10, rrf_k: 60}
+    rerank: {enabled: false, provider: none, model: "", top_k: 5}
+    evaluation: {enabled: false, provider: custom, metrics: [hit_rate]}
+    observability:
+      {log_level: INFO, trace_enabled: false, trace_file: ./logs/test.jsonl,
+       structured_logging: true}
+    ingestion:
+      splitter: structured_markdown
+      chunk_size: 512
+      chunk_overlap: 50
+      batch_size: 16
+      structured_chunking:
+        table_dense_representation: original
+        table_child_chunking:
+          enabled: true
+          max_tokens: 0
+          overlap_rows: 1
+          repeated_context_rows: 2
+    """
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(settings_path, config)
+
+    with pytest.raises(
+        SettingsError,
+        match="table_child_chunking.max_tokens must be greater than zero",
+    ):
+        load_settings(settings_path)
+
+
+def test_rejects_invalid_table_summary_llm_token_budget(tmp_path: Path) -> None:
+    config = """
+    llm: {provider: openai, model: gpt-4o-mini, temperature: 0.0, max_tokens: 1024}
+    embedding: {provider: openai, model: text-embedding-3-small, dimensions: 1536}
+    vector_store: {provider: chroma, persist_directory: ./data/db/chroma, collection_name: test}
+    retrieval: {dense_top_k: 20, sparse_top_k: 20, fusion_top_k: 10, rrf_k: 60}
+    rerank: {enabled: false, provider: none, model: "", top_k: 5}
+    evaluation: {enabled: false, provider: custom, metrics: [hit_rate]}
+    observability:
+      {log_level: INFO, trace_enabled: false, trace_file: ./logs/test.jsonl,
+       structured_logging: true}
+    ingestion:
+      splitter: structured_markdown
+      chunk_size: 512
+      chunk_overlap: 50
+      batch_size: 16
+      structured_chunking:
+        table_summary:
+          enabled: true
+          prompt_path: config/prompts/table_summary.txt
+          llm:
+            model: summary-model
+            max_tokens: 0
+    """
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(settings_path, config)
+
+    with pytest.raises(
+        SettingsError,
+        match="table_summary.llm.max_tokens must be greater than zero",
+    ):
+        load_settings(settings_path)
+
+
+def test_rejects_non_positive_embedding_max_tokens(tmp_path: Path) -> None:
+    config = """
+    llm: {provider: openai, model: gpt-4o-mini, temperature: 0.0, max_tokens: 1024}
+    embedding: {provider: openai, model: text-embedding-3-small, dimensions: 1536, max_tokens: 0}
+    vector_store: {provider: chroma, persist_directory: ./data/db/chroma, collection_name: test}
+    retrieval: {dense_top_k: 20, sparse_top_k: 20, fusion_top_k: 10, rrf_k: 60}
+    rerank: {enabled: false, provider: none, model: "", top_k: 5}
+    evaluation: {enabled: false, provider: custom, metrics: [hit_rate]}
+    observability:
+      {log_level: INFO, trace_enabled: false, trace_file: ./logs/test.jsonl,
+       structured_logging: true}
+    ingestion: {splitter: recursive, chunk_size: 512, chunk_overlap: 100, batch_size: 16}
+    """
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(settings_path, config)
+
+    with pytest.raises(
+        SettingsError,
+        match="embedding.max_tokens must be greater than zero",
+    ):
+        load_settings(settings_path)
+
+
+def test_load_settings_paddle_loader(tmp_path: Path) -> None:
+    config = """
+    llm: {provider: openai, model: gpt-4o-mini, temperature: 0.0, max_tokens: 1024}
+    embedding: {provider: openai, model: text-embedding-3-small, dimensions: 1536}
+    vector_store: {provider: chroma, persist_directory: ./data/db/chroma, collection_name: test}
+    retrieval: {dense_top_k: 20, sparse_top_k: 20, fusion_top_k: 10, rrf_k: 60}
+    rerank: {enabled: false, provider: none, model: "", top_k: 5}
+    evaluation: {enabled: false, provider: custom, metrics: [hit_rate]}
+    observability:
+      {log_level: INFO, trace_enabled: false, trace_file: ./logs/test.jsonl,
+       structured_logging: true}
+    ingestion:
+      splitter: recursive
+      chunk_size: 800
+      chunk_overlap: 100
+      batch_size: 16
+      loader:
+        provider: paddle
+        parsed_dir: ./data/parsed
+        paddle:
+          backend: api
+          docker:
+            engine: transformers
+            merge_tables: true
+          api:
+            model: PaddleOCR-VL-1.6
+            token_env: PADDLEOCR_API_TOKEN
+    """
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(settings_path, config)
+
+    settings = load_settings(settings_path)
+
+    assert settings.ingestion is not None
+    assert settings.ingestion.loader.provider == "paddle"
+    assert settings.ingestion.loader.paddle == {
+        "backend": "api",
+        "docker": {
+            "engine": "transformers",
+            "merge_tables": True,
+        },
+        "api": {
+            "model": "PaddleOCR-VL-1.6",
+            "token_env": "PADDLEOCR_API_TOKEN",
+        },
+    }
 
 
 def test_load_settings_retrieval_weights(tmp_path: Path) -> None:
@@ -92,7 +287,9 @@ def test_load_settings_retrieval_weights(tmp_path: Path) -> None:
       sparse_weight: 0.3
     rerank: {enabled: false, provider: none, model: "", top_k: 5}
     evaluation: {enabled: false, provider: custom, metrics: [hit_rate]}
-    observability: {log_level: INFO, trace_enabled: false, trace_file: ./logs/test.jsonl, structured_logging: true}
+    observability:
+      {log_level: INFO, trace_enabled: false, trace_file: ./logs/test.jsonl,
+       structured_logging: true}
     ingestion: {splitter: recursive, chunk_size: 1000, chunk_overlap: 200, batch_size: 100}
     """
     settings_path = tmp_path / "settings.yaml"

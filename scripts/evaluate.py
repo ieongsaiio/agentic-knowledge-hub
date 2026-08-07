@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-if sys.platform == "win32":
+if sys.platform == "win32" and __name__ == "__main__":
     import io
 
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -339,10 +339,14 @@ def _evaluate_plan(
         if requires_generated_answer(plan.settings)
         else None
     )
+    reranker = _require_benchmark_reranker(
+        plan.settings,
+        CoreReranker(plan.settings),
+    )
     runner = EvalRunner(
         settings=plan.settings,
         hybrid_search=hybrid_search,
-        reranker=CoreReranker(plan.settings),
+        reranker=reranker,
         evaluator=EvaluatorFactory.create(plan.settings),
         answer_generator=answer_generator,
     )
@@ -355,6 +359,17 @@ def _evaluate_plan(
         f"{plan.settings.evaluation.benchmark.provider}:{plan.settings.evaluation.benchmark.split}"
     )
     return report
+
+
+def _require_benchmark_reranker(settings: Any, reranker: Any) -> Any:
+    """Fail benchmark runs when an enabled reranker silently fell back."""
+    if settings.rerank.enabled and not reranker.is_enabled:
+        raise RuntimeError(
+            "Benchmark reranker is enabled but unavailable. Check the provider, "
+            "model, API key, and network configuration, or explicitly set "
+            "rerank.enabled to false."
+        )
+    return reranker
 
 
 def _benchmark_checkpoint_path(
@@ -379,12 +394,23 @@ def _benchmark_checkpoint_path(
         ),
         "rerank_top_k": plan.settings.rerank.top_k,
         "metrics": list(plan.settings.evaluation.metrics),
+        "evidence_judge_prompt_hash": _evidence_judge_prompt_hash(),
     }
     digest = hashlib.sha256(
         json.dumps(identity, ensure_ascii=True, sort_keys=True).encode("utf-8")
     ).hexdigest()[:16]
     safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(plan.name)).strip("._")
     return base.resolve() / ".checkpoints" / f"{safe_name}_{digest}.jsonl"
+
+
+def _evidence_judge_prompt_hash() -> str:
+    """Hash the effective prompt file so prompt edits invalidate checkpoints."""
+    prompt_path = PROJECT_ROOT / "config" / "prompts" / "evidence_judge.txt"
+    try:
+        content = prompt_path.read_bytes()
+    except OSError:
+        return "missing"
+    return hashlib.sha256(content).hexdigest()
 
 
 def _create_hybrid_search(settings: Any, collection: str) -> Any:

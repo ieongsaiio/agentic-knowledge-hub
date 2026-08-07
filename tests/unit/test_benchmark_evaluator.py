@@ -149,13 +149,27 @@ def test_evidence_metrics_share_one_llm_judgement() -> None:
         )
     )
     evaluator = BenchmarkEvaluator(
-        metrics=["evidence_hit_rate@3", "evidence_mrr@5"],
+        metrics=[
+            "macro_evidence_hit_rate@3",
+            "micro_evidence_hit_rate@3",
+            "macro_evidence_mrr@5",
+            "macro_context_precision@3",
+        ],
         evidence_judge=judge,
     )
     retrieved = [
-        {"text": "Table header"},
-        {"text": "Annual revenue was $1,200."},
-        {"text": "Unrelated text"},
+        {
+            "text": "Wrong page.",
+            "metadata": {"filename": "annual-report.pdf", "page_num": 6},
+        },
+        {
+            "text": "Annual revenue was $1,200.",
+            "metadata": {"filename": "annual-report.pdf", "page_num": 7},
+        },
+        {
+            "text": "Wrong document.",
+            "metadata": {"filename": "other.pdf", "page_num": 7},
+        },
     ]
 
     result = evaluator.evaluate(
@@ -165,12 +179,39 @@ def test_evidence_metrics_share_one_llm_judgement() -> None:
     )
 
     assert result == {
-        "evidence_hit_rate@3": 1.0,
-        "evidence_mrr@5": 0.5,
+        "macro_context_precision@3": pytest.approx(1.0 / 3.0),
+        "macro_evidence_hit_rate@3": 1.0,
+        "macro_evidence_mrr@5": 0.5,
+        "micro_evidence_hit_rate@3": 1.0,
     }
     judge.judge.assert_called_once()
-    assert judge.judge.call_args.args[1] is not retrieved
     assert judge.judge.call_args.args[1] == retrieved
+    assert judge.judge.call_args.kwargs["eligible_ranks"] == ((2,),)
+
+
+def test_evidence_judge_is_not_called_without_document_page_candidates() -> None:
+    judge = Mock()
+    evaluator = BenchmarkEvaluator(
+        metrics=["macro_evidence_hit_rate@5", "macro_evidence_mrr@5"],
+        evidence_judge=judge,
+    )
+
+    result = evaluator.evaluate(
+        "What was the annual revenue?",
+        [
+            {
+                "text": "Annual revenue was $1,200.",
+                "metadata": {"filename": "other.pdf", "page_num": 7},
+            }
+        ],
+        ground_truth=_benchmark_case(),
+    )
+
+    assert result == {
+        "macro_evidence_hit_rate@5": 0.0,
+        "macro_evidence_mrr@5": 0.0,
+    }
+    judge.judge.assert_not_called()
 
 
 def test_missing_ground_truth_raises_clear_error() -> None:

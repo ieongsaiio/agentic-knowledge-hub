@@ -16,6 +16,7 @@ from src.libs.benchmark.base_benchmark import BenchmarkCase
 __all__ = [
     "BenchmarkMetrics",
     "aggregate",
+    "evidence_candidate_ranks",
     "normalize_document_name",
     "normalize_evidence_text",
     "parse_metric_name",
@@ -28,6 +29,14 @@ _RANKED_METRICS = {
     "page_hit_rate",
     "evidence_hit_rate",
     "evidence_mrr",
+    "macro_evidence_hit_rate",
+    "micro_evidence_hit_rate",
+    "macro_evidence_mrr",
+    "context_recall",
+    "macro_context_recall",
+    "context_precision",
+    "macro_context_precision",
+    "micro_context_precision",
 }
 _ANSWER_METRICS = {
     "answer_exact_match",
@@ -317,6 +326,27 @@ def _extract_evidences(case: BenchmarkCase) -> list[_Evidence]:
     return evidences
 
 
+def evidence_candidate_ranks(
+    case: BenchmarkCase,
+    retrieved: Sequence[Any],
+) -> tuple[tuple[int, ...], ...]:
+    """Return original ranks matching each evidence's document and page."""
+    extracted = [_extract_retrieved(item) for item in retrieved]
+    candidates: list[tuple[int, ...]] = []
+    for evidence in _extract_evidences(case):
+        if not evidence.document or evidence.page is None:
+            candidates.append(())
+            continue
+        ranks = tuple(
+            rank
+            for rank, item in enumerate(extracted, start=1)
+            if evidence.document in item.documents
+            and any(start <= evidence.page <= end for start, end in item.pages)
+        )
+        candidates.append(ranks)
+    return tuple(candidates)
+
+
 def _token_counter(value: Any) -> Counter[str]:
     return Counter(normalize_evidence_text(value).split())
 
@@ -406,18 +436,12 @@ def _evidence_hit_rate(
 ) -> float:
     if evidence_count <= 0:
         return 0.0
-    hits = sum(
-        1
-        for rank in match_ranks[:evidence_count]
-        if rank is not None and rank <= cutoff
-    )
+    hits = sum(1 for rank in match_ranks[:evidence_count] if rank is not None and rank <= cutoff)
     return hits / evidence_count
 
 
 def _evidence_mrr(match_ranks: Sequence[int | None], cutoff: int) -> float:
-    ranks_within_cutoff = [
-        rank for rank in match_ranks if rank is not None and rank <= cutoff
-    ]
+    ranks_within_cutoff = [rank for rank in match_ranks if rank is not None and rank <= cutoff]
     if not ranks_within_cutoff:
         return 0.0
     return 1.0 / min(ranks_within_cutoff)
@@ -500,6 +524,24 @@ def _numeric_accuracy(reference: Any, answer: Any) -> float | None:
     )
 
 
+def _context_recall(fact_ranks: Sequence[int | None], cutoff: int) -> float:
+    if not fact_ranks:
+        return 0.0
+    return sum(rank is not None and rank <= cutoff for rank in fact_ranks) / len(fact_ranks)
+
+
+def _context_precision(
+    relevant_ranks: Sequence[int],
+    retrieved_count: int,
+    cutoff: int,
+) -> float:
+    denominator = min(max(retrieved_count, 0), cutoff)
+    if denominator <= 0:
+        return 0.0
+    relevant = {rank for rank in relevant_ranks if 1 <= rank <= cutoff}
+    return len(relevant) / denominator
+
+
 class BenchmarkMetrics:
     """Compute configured benchmark metrics without network dependencies."""
 
@@ -526,11 +568,15 @@ class BenchmarkMetrics:
         retrieved: list[Any],
         answer: str | None,
         evidence_ranks: Sequence[int | None] | None = None,
+        fact_ranks: Sequence[int | None] | None = None,
+        context_relevant_ranks: Sequence[int] | None = None,
     ) -> dict[str, float]:
         """Evaluate one benchmark case using the configured metrics."""
         extracted = [_extract_retrieved(item) for item in (retrieved or [])]
         evidences = _extract_evidences(case)
         matched_evidence_ranks = tuple(evidence_ranks or ())
+        matched_fact_ranks = tuple(fact_ranks or ())
+        matched_context_ranks = tuple(context_relevant_ranks or ())
         reference_answer = _read_field(case, "reference_answer", "")
         results: dict[str, float] = {}
 
@@ -542,16 +588,34 @@ class BenchmarkMetrics:
                 score = _document_mrr(top_k, evidences)
             elif metric.base == "page_hit_rate":
                 score = _page_hit_rate(top_k, evidences)
-            elif metric.base == "evidence_hit_rate":
+            elif metric.base in {
+                "evidence_hit_rate",
+                "macro_evidence_hit_rate",
+                "micro_evidence_hit_rate",
+            }:
                 assert metric.k is not None
                 score = _evidence_hit_rate(
                     matched_evidence_ranks,
                     len(evidences),
                     metric.k,
                 )
-            elif metric.base == "evidence_mrr":
+            elif metric.base in {"evidence_mrr", "macro_evidence_mrr"}:
                 assert metric.k is not None
                 score = _evidence_mrr(matched_evidence_ranks, metric.k)
+            elif metric.base in {"context_recall", "macro_context_recall"}:
+                assert metric.k is not None
+                score = _context_recall(matched_fact_ranks, metric.k)
+            elif metric.base in {
+                "context_precision",
+                "macro_context_precision",
+                "micro_context_precision",
+            }:
+                assert metric.k is not None
+                score = _context_precision(
+                    matched_context_ranks,
+                    len(extracted),
+                    metric.k,
+                )
             elif metric.base == "answer_exact_match":
                 score = _answer_exact_match(reference_answer, answer)
             elif metric.base == "answer_token_f1":

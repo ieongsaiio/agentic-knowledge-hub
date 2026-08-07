@@ -268,7 +268,7 @@ class HybridSearch:
             filters=merged_filters,
             trace=trace,
         )
-        
+
         # Step 3: Handle fallback scenarios
         used_fallback = False
         if dense_error and sparse_error:
@@ -298,7 +298,7 @@ class HybridSearch:
                 top_k=effective_top_k,
                 trace=trace,
             )
-        
+
         # Step 5: Apply post-fusion metadata filters (if any)
         if merged_filters and self.config.metadata_filter_post:
             fused_results = self._apply_metadata_filters(fused_results, merged_filters)
@@ -646,7 +646,7 @@ class HybridSearch:
                 "chunks": _snapshot_results(fused),
             }, elapsed_ms=_elapsed)
         return fused
-    
+
     def _interleave_results(
         self,
         dense_results: List[RetrievalResult],

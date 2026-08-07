@@ -35,7 +35,10 @@
 ```text
 Ingestion
 PDF
-  -> MarkItDown 文本解析 + PyMuPDF 页码/图片处理
+  -> Loader Factory
+       -> default: MarkItDown 文本解析 + PyMuPDF 页码/图片处理
+       -> paddle/docker: PaddleOCR-VL Transformers + 页面重组
+       -> paddle/api: PaddleOCR Studio 异步 Job API + 逐页 Markdown
   -> Parsed Document Cache
   -> Recursive Splitter (characters | tokens)
   -> Chunk Refiner / Metadata Enricher / Image Captioner
@@ -65,8 +68,10 @@ Question
 |   |-- prepare_benchmark.py      # Benchmark 下载与样本准备
 |   |-- evaluate.py               # 评估、消融实验、索引复用与断点恢复
 |   |-- export_evaluation_history.py
-|   |-- clear_data.py             # 清理 Storage、Evaluation 和 Logs
+|   |-- clear_data.py             # 清理 Storage、Parsed Cache、Evaluation 和 Logs
 |   `-- start_dashboard.py        # Streamlit Dashboard 启动器
+|-- docker/
+|   `-- paddleocr-transformers/   # PaddleOCR-VL Transformers 隔离运行镜像
 |-- src/
 |   |-- core/                     # Settings、共享类型、Query Engine、Response、Trace
 |   |-- ingestion/                # Pipeline、Chunking、Transform、Embedding、Storage
@@ -96,6 +101,140 @@ Question
 | Evaluator | Custom、Ragas、FinanceBench Benchmark |
 
 新增 Provider 的基本方式是实现对应 `Base*` 接口，然后注册到 Factory；Pipeline 和调用方不需要依赖具体供应商。
+
+## PDF Loader 与 Parsed Cache
+
+`ingestion.loader.provider` 支持 `default` 与 `paddle`。`default` 保留原有
+MarkItDown + PyMuPDF 流程；`paddle` 可选择本地 Docker Transformers 或
+PaddleOCR Studio API，适合表格、标题层级和复杂版面较多的 PDF。
+
+```yaml
+ingestion:
+  loader:
+    provider: "paddle"
+    parsed_dir: "./data/parsed"
+    paddle:
+      backend: "api"  # docker 或 api
+      docker:
+        engine: "transformers"
+        pipeline_version: "v1.6"
+        docker_image: "agentic-knowledge-hub/paddleocr-vl-transformers:latest"
+        docker_cache_volume: "paddleocr-transformers-cache"
+        paddlex_cache_volume: "paddleocr-paddlex-cache"
+        device: "cpu"
+        shm_size: "4g"
+        merge_tables: false
+        relevel_titles: true
+        concatenate_pages: false
+        use_queues: false
+        timeout_seconds: 7200
+      api:
+        job_url: "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+        token_env: "PADDLEOCR_API_TOKEN"
+        model: "PaddleOCR-VL-1.6"
+        poll_interval_seconds: 5
+        timeout_seconds: 1800
+        request_timeout_seconds: 120
+        optional_payload:
+          useDocOrientationClassify: false
+          useDocUnwarping: false
+          useChartRecognition: false
+          restructurePages: true
+          mergeTables: false
+          relevelTitles: true
+          concatenatePages: false
+          returnMarkdownImages: false
+```
+
+API token 只通过环境变量注入，不应写入 YAML：
+
+```powershell
+$env:PADDLEOCR_API_TOKEN="<your-token>"
+```
+
+切换 `backend: "docker"` 后，先构建本地镜像：
+
+```powershell
+docker build -t agentic-knowledge-hub/paddleocr-vl-transformers:latest `
+  -f docker/paddleocr-transformers/Dockerfile .
+```
+
+解析结果保存在 `data/parsed/`。缓存文件名由 PDF SHA-256 和 Loader 配置
+Hash 组成；改变 Backend、模型、输出相关参数或图片策略会使用另一份缓存。
+Token、轮询间隔和网络 timeout 不进入缓存 key。缓存 JSON 同时保存完整
+Markdown、物理页字符区间和 Paddle 原始/重组 JSON。Chunk 写入 Chroma 前
+会移除这些大型中间字段，只保留来源、offset 与
+`page_start/page_end/page_num`。
+
+项目固定使用 `merge_tables=false` / `mergeTables=false`，不合并跨页表格，
+也不推断续表关系或继承上一页表格信息。每个 API 结果页独立保留自己的
+Markdown 和物理页字符区间，以页面顺序与引用准确性为优先。
+
+`vision_llm.enabled=false` 时，两个 Loader 都不会提取或索引图片，Paddle 也会忽略 image label，不产生图片占位符。开启后，Paddle 导出图片并在 Markdown 中写入 `[IMAGE: image_id]`，后续 Captioner 再处理对应图片。
+
+真实 Loader 验证命令：
+
+```powershell
+python scripts/validate_paddle_loader.py path/to/document.pdf
+```
+
+只清理 parsed cache：
+
+```powershell
+python scripts/clear_data.py --parsed --yes
+```
+
+真实 API 单页同步/异步测试：
+
+```powershell
+python -m pytest tests/integration/test_paddleocr_api_integration.py -q
+```
+
+## Table Summary 补充向量
+
+结构化切分可以为每张完整 Table Parent 生成一条额外的 LLM Summary Vector。原始
+Table Child 不会被摘要替换；Summary 命中时，Chroma 返回完整 Parent Table 内容，
+摘要只作为 Dense Embedding 输入。Summary 记录不写入 BM25，避免同一表格被重复计算
+稀疏词频。
+
+```yaml
+ingestion:
+  structured_chunking:
+    table_summary:
+      enabled: false
+      prompt_path: "./config/prompts/table_summary.txt"
+      prompt_version: "v1"
+      max_workers: 5
+      fail_on_error: false
+      llm:
+        provider: "openai"
+        model: "gpt-4o-mini"
+        temperature: 0.0
+        max_tokens: 512
+        extra_chat_configs: {}
+```
+
+嵌套 `llm` 只覆盖 Summary 专用模型需要改变的字段；未提供的 API Key、Base URL、
+Deployment 等字段会复用顶层 `llm` 配置。需要完全独立的服务时，可在该映射内填写
+完整 LLM Provider 字段。
+
+`enabled=true` 时，每张完整 Parent Table 调用一次 Summary LLM，而不是每个 Table
+Child 调用一次。调用在单份文档内按 `max_workers` 并发执行。默认
+`fail_on_error=false`，单张表摘要失败时只跳过该补充向量，原始 Table Child 仍正常
+入库；设为 `true` 可让任何摘要失败终止该文档摄取。
+
+Summary 记录的关键契约：
+
+```text
+Chroma document       = 完整原始 Parent Table（用于返回与引用）
+Dense embedding input = LLM Table Summary
+BM25                  = 不写入
+chunk_role            = table_summary
+parent_chunk_id       = 对应的完整 Table Parent ID
+```
+
+修改 Summary Model、Prompt Version 或相关配置会改变 Benchmark Index Fingerprint，
+避免错误复用旧 Collection。
 
 ## 快速开始
 
@@ -129,6 +268,16 @@ Copy-Item config/settings.yaml.example config/settings.yaml
 ```
 
 填写 `config/settings.yaml` 中所选 Provider 的模型、维度、URL、布尔值和数值参数。真实配置和凭据不会被 Git 跟踪；API Key 也可以通过环境变量提供。
+
+OpenAI 文本 Provider 可通过 `llm.api_mode` 选择 API：
+
+```yaml
+llm:
+  provider: "openai"
+  api_mode: "chat_completions"  # chat_completions 或 responses
+```
+
+`chat_completions` 调用 `/chat/completions`，也是默认值，适合现有 OpenAI-compatible 服务；`responses` 调用 `/responses`。第三方服务是否支持 Responses API 取决于该服务自身的实现。
 
 注意：同一 Chroma Collection 的向量维度必须与当前 Embedding 配置一致。更换 Embedding 模型或维度时，应使用新 Collection 或重建旧索引。
 
@@ -314,7 +463,7 @@ python scripts/evaluate.py --config config/settings.yaml --dry-run
 python scripts/evaluate.py --config config/settings.yaml --experiments baseline
 ```
 
-评估系统支持 Document/Page/Evidence Hit Rate、MRR、答案指标、LLM Evidence Judge、每 Query 记录、Checkpoint Resume 和实验对比 CSV。索引相关配置会生成 Fingerprint，相同索引可以复用，查询与评估配置变化不必重复解析全部 PDF。
+评估系统支持 Document/Page/Evidence Hit Rate、MRR、Atomic-Fact Context Recall、Context Precision@K、答案指标、LLM Evidence Judge、每 Query 记录、Checkpoint Resume 和实验对比 CSV。索引相关配置会生成 Fingerprint，相同索引可以复用，查询与评估配置变化不必重复解析全部 PDF。
 
 ## 测试
 
@@ -338,6 +487,12 @@ python scripts/clear_data.py --all --dry-run
 
 ```powershell
 python scripts/clear_data.py --all --yes
+```
+
+只重建知识库索引并保留耗时生成的 PDF parsed cache：
+
+```powershell
+python scripts/clear_data.py --storage --keep-parsed --yes
 ```
 
 ## Agentic RAG Roadmap

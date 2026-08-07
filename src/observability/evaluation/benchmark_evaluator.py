@@ -9,11 +9,23 @@ from src.libs.benchmark.base_benchmark import BenchmarkCase, BenchmarkEvidence
 from src.libs.evaluator.base_evaluator import BaseEvaluator
 from src.observability.evaluation.benchmark_metrics import (
     BenchmarkMetrics,
+    evidence_candidate_ranks,
     parse_metric_name,
 )
 from src.observability.evaluation.evidence_judge import LLMEvidenceJudge
 
-_EVIDENCE_METRICS = {"evidence_hit_rate", "evidence_mrr"}
+_EVIDENCE_METRICS = {
+    "evidence_hit_rate",
+    "evidence_mrr",
+    "macro_evidence_hit_rate",
+    "micro_evidence_hit_rate",
+    "macro_evidence_mrr",
+    "context_recall",
+    "macro_context_recall",
+    "context_precision",
+    "macro_context_precision",
+    "micro_context_precision",
+}
 
 
 class BenchmarkEvaluator(BaseEvaluator):
@@ -53,20 +65,35 @@ class BenchmarkEvaluator(BaseEvaluator):
 
         benchmark_case = self._benchmark_case_from_ground_truth(ground_truth)
         evidence_ranks: tuple[int | None, ...] = ()
+        fact_ranks: tuple[int | None, ...] = ()
+        context_relevant_ranks: tuple[int, ...] = ()
         if self._evidence_cutoffs and retrieved_chunks and benchmark_case.evidences:
-            judge = self._get_evidence_judge()
-            judgement = judge.judge(
+            judged_chunks = retrieved_chunks[: max(self._evidence_cutoffs)]
+            eligible_ranks = evidence_candidate_ranks(
                 benchmark_case,
-                retrieved_chunks[: max(self._evidence_cutoffs)],
-                trace=trace,
+                judged_chunks,
             )
-            evidence_ranks = judgement.match_ranks
+            if any(eligible_ranks):
+                judge = self._get_evidence_judge()
+                judgement = judge.judge(
+                    benchmark_case,
+                    judged_chunks,
+                    eligible_ranks=eligible_ranks,
+                    trace=trace,
+                )
+                evidence_ranks = judgement.match_ranks
+                fact_ranks = judgement.fact_completion_ranks
+                context_relevant_ranks = judgement.context_relevant_ranks
+            else:
+                evidence_ranks = (None,) * len(benchmark_case.evidences)
 
         result = self._benchmark_metrics.evaluate_case(
             case=benchmark_case,
             retrieved=retrieved_chunks,
             answer=generated_answer,
             evidence_ranks=evidence_ranks,
+            fact_ranks=fact_ranks,
+            context_relevant_ranks=context_relevant_ranks,
         )
         if not isinstance(result, Mapping):
             raise TypeError("BenchmarkMetrics.evaluate_case() must return a mapping")

@@ -27,6 +27,16 @@ def _register_builtin_providers() -> None:
         SplitterFactory.register_provider("recursive", RecursiveSplitter)
     except ImportError:
         pass  # RecursiveSplitter not available (missing langchain dependency)
+    try:
+        from src.libs.splitter.structured_markdown_splitter import (
+            StructuredMarkdownSplitter,
+        )
+        SplitterFactory.register_provider(
+            "structured_markdown",
+            StructuredMarkdownSplitter,
+        )
+    except ImportError:
+        pass
 
 
 class SplitterFactory:

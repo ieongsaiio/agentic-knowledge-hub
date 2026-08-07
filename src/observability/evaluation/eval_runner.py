@@ -154,6 +154,7 @@ class QueryResult:
     case_id: Optional[str] = None
     reference_answer: Optional[str] = None
     retrieved_results: List[Dict[str, Any]] = field(default_factory=list)
+    metric_weights: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise this per-query result."""
@@ -165,6 +166,7 @@ class QueryResult:
             "retrieved_results": self.retrieved_results,
             "generated_answer": self.generated_answer,
             "metrics": {k: round(v, 4) for k, v in self.metrics.items()},
+            "metric_weights": self.metric_weights,
             "elapsed_ms": round(self.elapsed_ms, 1),
         }
 
@@ -181,6 +183,10 @@ class QueryResult:
             metrics={
                 str(key): float(value)
                 for key, value in (data.get("metrics") or {}).items()
+            },
+            metric_weights={
+                str(key): int(value)
+                for key, value in (data.get("metric_weights") or {}).items()
             },
             elapsed_ms=float(data.get("elapsed_ms") or 0.0),
         )
@@ -508,12 +514,46 @@ class EvalRunner:
                 ground_truth=ground_truth,
             )
             qr.metrics = metrics
+            qr.metric_weights = self._metric_weights(
+                test_case,
+                metrics,
+                retrieved_count=len(retrieved_chunks),
+            )
         except Exception as exc:
             logger.warning("Evaluation failed for '%s': %s", test_case.query[:40], exc)
             qr.metrics = {}
 
         qr.elapsed_ms = (time.monotonic() - t0) * 1000.0
         return qr
+
+    @staticmethod
+    def _metric_weights(
+        test_case: BenchmarkCase | GoldenTestCase,
+        metrics: Mapping[str, float],
+        retrieved_count: int | None = None,
+    ) -> Dict[str, int]:
+        """Return evidence-count weights for configured micro metrics."""
+        evidences = getattr(test_case, "evidences", None)
+        if evidences is None:
+            evidences = getattr(test_case, "expected_evidence", ())
+        evidence_count = len(evidences or ())
+        weights: Dict[str, int] = {}
+        if evidence_count > 0:
+            weights.update(
+                {
+                    name: evidence_count
+                    for name in metrics
+                    if name.startswith("micro_evidence_")
+                }
+            )
+        if retrieved_count is not None and retrieved_count > 0:
+            for name in metrics:
+                if not name.startswith("micro_context_precision@"):
+                    continue
+                _, raw_cutoff = name.rsplit("@", 1)
+                if raw_cutoff.isdigit():
+                    weights[name] = min(retrieved_count, int(raw_cutoff))
+        return weights
 
     def _requires_generated_answer(self) -> bool:
         """Return whether configured evaluators consume a generated answer."""
@@ -542,7 +582,7 @@ class EvalRunner:
                 configured_fusion_top_k = int(
                     getattr(retrieval_settings, "fusion_top_k", 0) or 0
                 )
-                initial_top_k = max(top_k * 2, configured_fusion_top_k)
+                initial_top_k = configured_fusion_top_k or top_k
             else:
                 initial_top_k = top_k
 
@@ -727,10 +767,24 @@ class EvalRunner:
         for qr in results:
             all_keys.update(qr.metrics.keys())
 
-        # Average each metric
+        # Macro metrics use one vote per query. Micro metrics use their
+        # persisted evidence counts so checkpoints preserve exact aggregation.
         averages: Dict[str, float] = {}
         for key in sorted(all_keys):
-            values = [qr.metrics[key] for qr in results if key in qr.metrics]
-            averages[key] = sum(values) / len(values) if values else 0.0
+            present = [qr for qr in results if key in qr.metrics]
+            weighted = [
+                (qr.metrics[key], qr.metric_weights.get(key, 0))
+                for qr in present
+                if qr.metric_weights.get(key, 0) > 0
+            ]
+            if key.startswith("micro_") and weighted:
+                total_weight = sum(weight for _, weight in weighted)
+                averages[key] = (
+                    sum(value * weight for value, weight in weighted)
+                    / total_weight
+                )
+            else:
+                values = [qr.metrics[key] for qr in present]
+                averages[key] = sum(values) / len(values) if values else 0.0
 
         return averages

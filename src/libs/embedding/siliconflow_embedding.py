@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, List, Optional
+from typing import Any
 
 from src.libs.embedding.base_embedding import BaseEmbedding
 
@@ -52,11 +52,11 @@ class SiliconFlowEmbedding(BaseEmbedding):
     def __init__(
         self,
         settings: Any,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        max_batch_size: Optional[int] = None,
-        timeout: Optional[float] = None,
-        max_retries: Optional[int] = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        max_batch_size: int | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the SiliconFlow Embedding provider.
@@ -142,10 +142,10 @@ class SiliconFlowEmbedding(BaseEmbedding):
 
     def embed(
         self,
-        texts: List[str],
-        trace: Optional[Any] = None,
+        texts: list[str],
+        trace: Any | None = None,
         **kwargs: Any,
-    ) -> List[List[float]]:
+    ) -> list[list[float]]:
         """Generate embeddings for a batch of texts using SiliconFlow API.
 
         Args:
@@ -175,7 +175,7 @@ class SiliconFlowEmbedding(BaseEmbedding):
         if not isinstance(max_batch_size, int) or max_batch_size <= 0:
             raise ValueError(f"max_batch_size must be a positive integer, got {max_batch_size}")
 
-        all_embeddings: List[List[float]] = []
+        all_embeddings: list[list[float]] = []
 
         for batch_start in range(0, len(texts), max_batch_size):
             batch = texts[batch_start: batch_start + max_batch_size]
@@ -236,11 +236,14 @@ class SiliconFlowEmbedding(BaseEmbedding):
                         f"for batch starting at {batch_start}: {e}"
                     ) from e
 
-                if "data" not in result:
+                data = result.get("data") if isinstance(result, dict) else None
+                expected_count = len(payload.get("input", []))
+                if not isinstance(data, list) or len(data) != expected_count:
                     status_code = getattr(response, "status_code", "unknown")
                     raise SiliconFlowEmbeddingError(
                         "Unexpected response from SiliconFlow API for batch "
-                        f"starting at {batch_start} (status={status_code}): {result}"
+                        f"starting at {batch_start} (status={status_code}, "
+                        f"expected_items={expected_count}): {result}"
                     )
                 return result
             except Exception as e:

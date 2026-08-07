@@ -340,7 +340,7 @@ class QueryKnowledgeHubTool:
                 results = await asyncio.to_thread(
                     self._apply_rerank, query, results, effective_top_k, trace,
                 )
-            
+
             # Build response
             response = self._response_builder.build(
                 results=results,
@@ -399,8 +399,15 @@ class QueryKnowledgeHubTool:
         if self._hybrid_search is None:
             raise RuntimeError("HybridSearch not initialized")
         
-        # Use a larger initial retrieval for reranking
-        initial_top_k = top_k * 2 if self.config.enable_rerank else top_k
+        retrieval = getattr(self.settings, "retrieval", None)
+        configured_fusion_top_k = int(
+            getattr(retrieval, "fusion_top_k", 0) or 0
+        )
+        initial_top_k = (
+            configured_fusion_top_k or top_k
+            if self.config.enable_rerank
+            else top_k
+        )
         
         try:
             results = self._hybrid_search.search(

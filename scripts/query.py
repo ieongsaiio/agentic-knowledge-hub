@@ -180,9 +180,14 @@ def _run_query(
     trace.metadata["top_k"] = top_k
 
     try:
+        initial_top_k = (
+            hybrid_search.config.fusion_top_k
+            if use_rerank and reranker.is_enabled
+            else top_k
+        )
         hybrid_result = hybrid_search.search(
             query=query,
-            top_k=top_k,
+            top_k=initial_top_k,
             filters=None,
             trace=trace,
             return_details=verbose,

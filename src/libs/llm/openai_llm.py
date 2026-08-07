@@ -1,8 +1,8 @@
 """OpenAI-compatible LLM implementation.
 
 This module provides the OpenAI LLM implementation that works with
-the standard OpenAI API. It can also be used with other OpenAI-compatible
-endpoints by configuring the base_url.
+the Chat Completions or Responses API. Chat Completions can also be used with
+other OpenAI-compatible endpoints by configuring the base_url.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ class OpenAILLMError(RuntimeError):
 class OpenAILLM(BaseLLM):
     """OpenAI LLM provider implementation.
     
-    This class implements the BaseLLM interface for OpenAI's chat completion API.
-    It supports the standard OpenAI API and any OpenAI-compatible endpoints.
+    This class implements the BaseLLM interface for OpenAI's Chat Completions
+    and Responses APIs.
     
     Attributes:
         api_key: The API key for authentication.
@@ -64,6 +64,13 @@ class OpenAILLM(BaseLLM):
         self.model = settings.llm.model
         self.default_temperature = settings.llm.temperature
         self.default_max_tokens = settings.llm.max_tokens
+        self.api_mode = str(
+            getattr(settings.llm, "api_mode", "chat_completions")
+        ).strip().lower()
+        if self.api_mode not in {"chat_completions", "responses"}:
+            raise ValueError(
+                "OpenAI api_mode must be one of: chat_completions, responses"
+            )
         self.extra_chat_configs = dict(
             getattr(settings.llm, "extra_chat_configs", {}) or {}
         )
@@ -108,7 +115,7 @@ class OpenAILLM(BaseLLM):
         trace: Optional[Any] = None,
         **kwargs: Any,
     ) -> ChatResponse:
-        """Generate a chat completion using OpenAI API.
+        """Generate text using the configured OpenAI API surface.
         
         Args:
             messages: List of conversation messages.
@@ -144,9 +151,8 @@ class OpenAILLM(BaseLLM):
                 extra_payload=chat_configs,
             )
             
-            # Parse response
-            content = response_data["choices"][0]["message"]["content"]
-            usage = response_data.get("usage")
+            content = self._extract_content(response_data)
+            usage = self._normalise_usage(response_data.get("usage"))
             
             return ChatResponse(
                 content=content,
@@ -191,7 +197,8 @@ class OpenAILLM(BaseLLM):
         """
         import httpx
         
-        url = f"{self.base_url.rstrip('/')}/chat/completions"
+        endpoint = "chat/completions" if self.api_mode == "chat_completions" else "responses"
+        url = f"{self.base_url.rstrip('/')}/{endpoint}"
         if self.api_version:
             url += f"?api-version={self.api_version}"
         
@@ -205,12 +212,20 @@ class OpenAILLM(BaseLLM):
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             }
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
+        if self.api_mode == "chat_completions":
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        else:
+            payload = {
+                "model": model,
+                "input": messages,
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
+            }
         if extra_payload:
             payload.update(extra_payload)
         
@@ -233,6 +248,42 @@ class OpenAILLM(BaseLLM):
             raise OpenAILLMError(
                 f"[OpenAI] Connection failed: {type(e).__name__}: {e}"
             ) from e
+
+    def _extract_content(self, response_data: Dict[str, Any]) -> str:
+        """Extract assistant text from either supported response format."""
+        if self.api_mode == "chat_completions":
+            return response_data["choices"][0]["message"]["content"]
+
+        output_text = response_data.get("output_text")
+        if isinstance(output_text, str) and output_text:
+            return output_text
+
+        text_parts: List[str] = []
+        for output_item in response_data.get("output", []):
+            if not isinstance(output_item, dict) or output_item.get("type") != "message":
+                continue
+            for content_item in output_item.get("content", []):
+                if not isinstance(content_item, dict):
+                    continue
+                text = content_item.get("text")
+                if content_item.get("type") == "output_text" and isinstance(text, str):
+                    text_parts.append(text)
+        if not text_parts:
+            raise KeyError("output[].content[].text")
+        return "".join(text_parts)
+
+    def _normalise_usage(
+        self,
+        usage: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, int]]:
+        """Map Responses token names to the project's ChatResponse contract."""
+        if usage is None or self.api_mode == "chat_completions":
+            return usage
+        return {
+            "prompt_tokens": int(usage.get("input_tokens", 0)),
+            "completion_tokens": int(usage.get("output_tokens", 0)),
+            "total_tokens": int(usage.get("total_tokens", 0)),
+        }
     
     def _parse_error_response(self, response: Any) -> str:
         """Parse error details from API response.

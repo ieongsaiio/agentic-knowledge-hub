@@ -3,6 +3,7 @@
 
 Examples:
     python scripts/clear_data.py --storage
+    python scripts/clear_data.py --parsed --yes
     python scripts/clear_data.py --logs --yes
     python scripts/clear_data.py --all --dry-run
     python scripts/clear_data.py --all --yes
@@ -42,7 +43,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--storage",
         action="store_true",
-        help="Clear Chroma, BM25, ingestion history, image index, and images.",
+        help=(
+            "Clear Chroma, BM25, ingestion history, image index, images, "
+            "and parsed-document caches."
+        ),
+    )
+    parser.add_argument(
+        "--parsed",
+        action="store_true",
+        help="Clear only parsed-document caches.",
     )
     parser.add_argument(
         "--logs",
@@ -58,6 +67,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--all",
         action="store_true",
         help="Clear storage, logs, and evaluation outputs.",
+    )
+    parser.add_argument(
+        "--keep-parsed",
+        action="store_true",
+        help="Preserve data/parsed and the legacy parsed cache while clearing storage.",
     )
     parser.add_argument(
         "--config",
@@ -76,9 +90,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     args = parser.parse_args(argv)
 
-    if not (args.storage or args.logs or args.evaluation or args.all):
+    if not (args.storage or args.parsed or args.logs or args.evaluation or args.all):
         parser.error(
-            "select at least one scope: --storage, --logs, --evaluation, or --all"
+            "select at least one scope: --storage, --parsed, --logs, "
+            "--evaluation, or --all"
         )
     return args
 
@@ -148,6 +163,8 @@ def build_targets(
     storage: bool,
     logs: bool,
     evaluation: bool,
+    keep_parsed: bool = False,
+    parsed: bool = False,
 ) -> list[ClearTarget]:
     """Build a deduplicated and validated removal plan."""
     root = root.resolve(strict=False)
@@ -170,17 +187,33 @@ def build_targets(
                 ClearTarget("Extracted images", root / "data" / "images"),
             ]
         )
+        if not keep_parsed:
+            targets.extend(
+                [
+                    ClearTarget("Parsed documents", root / "data" / "parsed"),
+                    ClearTarget("Legacy parsed cache", root / "data" / "cache"),
+                ]
+            )
         targets.extend(
             database_targets(root, "ingestion_history.db", "Ingestion history")
         )
         targets.extend(database_targets(root, "image_index.db", "Image index"))
 
+    if parsed:
+        targets.extend(
+            [
+                ClearTarget("Parsed documents", root / "data" / "parsed"),
+                ClearTarget("Legacy parsed cache", root / "data" / "cache"),
+            ]
+        )
+
     if logs:
         logs_root = (root / "logs").resolve(strict=False)
         if logs_root.is_dir():
             targets.extend(
-                ClearTarget("JSONL log", path)
-                for path in logs_root.rglob("*.jsonl")
+                ClearTarget("Generated log", path)
+                for path in logs_root.rglob("*")
+                if path.is_file()
             )
         trace_path = configured_value(
             config,
@@ -265,6 +298,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             storage=args.storage or select_all,
             logs=args.logs or select_all,
             evaluation=args.evaluation or select_all,
+            keep_parsed=args.keep_parsed,
+            parsed=args.parsed,
         )
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
@@ -281,6 +316,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"already_absent={absent}"
     )
     print("[PRESERVED] data/benchmarks")
+    if args.keep_parsed:
+        print("[PRESERVED] data/parsed")
     return 0
 
 

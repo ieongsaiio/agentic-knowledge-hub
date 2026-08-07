@@ -33,6 +33,10 @@ def test_storage_cleanup_preserves_benchmark_data(tmp_path: Path) -> None:
         logs=False,
         evaluation=False,
     )
+    target_paths = {target.path for target in targets}
+    assert (tmp_path / "data" / "parsed").resolve() in target_paths
+    assert (tmp_path / "data" / "cache").resolve() in target_paths
+
     removed, _ = clear_targets(targets, dry_run=False)
 
     assert removed == 5
@@ -43,7 +47,43 @@ def test_storage_cleanup_preserves_benchmark_data(tmp_path: Path) -> None:
     assert (benchmark / "content.bin").exists()
 
 
-def test_logs_scope_only_removes_jsonl_files(tmp_path: Path) -> None:
+def test_storage_cleanup_can_preserve_parsed_cache(tmp_path: Path) -> None:
+    parsed = tmp_path / "data" / "parsed"
+    legacy_cache = tmp_path / "data" / "cache"
+    parsed.mkdir(parents=True)
+    legacy_cache.mkdir(parents=True)
+
+    targets = build_targets(
+        tmp_path,
+        _config(),
+        storage=True,
+        logs=False,
+        evaluation=False,
+        keep_parsed=True,
+    )
+    target_paths = {target.path for target in targets}
+
+    assert parsed.resolve() not in target_paths
+    assert legacy_cache.resolve() not in target_paths
+
+
+def test_parsed_scope_only_selects_parsed_caches(tmp_path: Path) -> None:
+    targets = build_targets(
+        tmp_path,
+        _config(),
+        storage=False,
+        logs=False,
+        evaluation=False,
+        parsed=True,
+    )
+
+    assert {target.path for target in targets} == {
+        (tmp_path / "data" / "parsed").resolve(),
+        (tmp_path / "data" / "cache").resolve(),
+    }
+
+
+def test_logs_scope_removes_log_and_jsonl_files(tmp_path: Path) -> None:
     logs = tmp_path / "logs"
     logs.mkdir()
     trace = logs / "traces.jsonl"
@@ -64,7 +104,7 @@ def test_logs_scope_only_removes_jsonl_files(tmp_path: Path) -> None:
 
     assert not trace.exists()
     assert not history.exists()
-    assert text_log.exists()
+    assert not text_log.exists()
 
 
 def test_dry_run_does_not_remove_data(tmp_path: Path) -> None:

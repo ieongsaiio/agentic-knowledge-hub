@@ -79,3 +79,17 @@ class BaseLoader(ABC):
         if not path.is_file():
             raise ValueError(f"Path is not a file: {path}")
         return path
+
+    @staticmethod
+    def _attach_section_tree(document: Document) -> Document:
+        """Attach the loader-stage Markdown Section tree to a Document."""
+        from src.libs.loader.markdown_section_tree import (
+            build_markdown_section_tree,
+        )
+
+        document.metadata["section_tree"] = build_markdown_section_tree(
+            document.text,
+            document_id=document.id,
+            page_spans=document.metadata.get("page_spans"),
+        )
+        return document

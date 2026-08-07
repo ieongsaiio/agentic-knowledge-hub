@@ -3,6 +3,7 @@
 
 llm:
   provider: ""
+  api_mode: ""  # chat_completions or responses
   model: ""
   deployment_name: ""
   base_url: ""
@@ -19,6 +20,7 @@ embedding:
   provider: ""
   model: ""
   dimensions: ""
+  max_tokens: ""
   api_key: ""
   api_version: ""
   azure_endpoint: ""
@@ -57,7 +59,7 @@ rerank:
   model: ""
   api_args:
     base_url: ""
-    api_key_env: ""
+    api_key: ""
     model: ""
     return_documents: ""
   top_k: ""
@@ -94,12 +96,74 @@ observability:
   structured_logging: ""
 
 ingestion:
+  loader:
+    provider: ""
+    parsed_dir: ""
+    paddle:
+      backend: ""
+      docker:
+        engine: ""
+        pipeline_version: ""
+        docker_image: ""
+        docker_cache_volume: ""
+        paddlex_cache_volume: ""
+        device: ""
+        shm_size: ""
+        merge_tables: ""
+        relevel_titles: ""
+        concatenate_pages: ""
+        use_queues: ""
+        timeout_seconds: ""
+      api:
+        job_url: ""
+        token_env: ""
+        model: ""
+        poll_interval_seconds: ""
+        timeout_seconds: ""
+        request_timeout_seconds: ""
+        optional_payload:
+          useDocOrientationClassify: ""
+          useDocUnwarping: ""
+          useChartRecognition: ""
+          restructurePages: ""
+          mergeTables: ""
+          relevelTitles: ""
+          concatenatePages: ""
+          returnMarkdownImages: ""
   splitter: ""
   length_unit: ""
   tokenizer_model: ""
   chunk_size: ""
   chunk_overlap: ""
   batch_size: ""
+  structured_chunking:
+    text_splitter: ""
+    embedding_safety_margin: ""
+    table_dense_representation: ""
+    table_context_tokens: ""
+    table_child_chunking:
+      enabled: ""
+      max_tokens: ""
+      overlap_rows: ""
+      repeated_context_rows: ""
+    table_summary:
+      enabled: ""
+      prompt_path: ""
+      prompt_version: ""
+      max_workers: ""
+      fail_on_error: ""
+      llm:
+        provider: ""
+        api_mode: ""
+        model: ""
+        deployment_name: ""
+        azure_endpoint: ""
+        base_url: ""
+        api_version: ""
+        api_key: ""
+        temperature: ""
+        max_tokens: ""
+        extra_chat_configs: {}
   chunk_refiner:
     use_llm: ""
   metadata_enricher:

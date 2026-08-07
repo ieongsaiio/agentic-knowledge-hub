@@ -175,6 +175,9 @@ class ChromaStore(BaseVectorStore):
             # Ensure all metadata values are JSON-serializable
             # ChromaDB requires string, int, float, or bool values
             sanitized_metadata = self._sanitize_metadata(metadata)
+            # Chunk text belongs in Chroma's documents column. Drop the legacy
+            # metadata copy even when an older caller still supplies it.
+            sanitized_metadata.pop('text', None)
 
             # ChromaDB requires non-empty metadata dict
             if not sanitized_metadata:
@@ -182,8 +185,12 @@ class ChromaStore(BaseVectorStore):
 
             metadatas.append(sanitized_metadata)
 
-            # Document: use metadata.text if available, otherwise use id
-            document = metadata.get('text', record['id'])
+            # Prefer the explicit document field. The metadata fallback keeps
+            # older provider callers compatible without storing two copies.
+            document = record.get(
+                'document',
+                metadata.get('text', record['id']),
+            )
             documents.append(str(document))
 
         # Perform upsert (ChromaDB's add() is idempotent with same IDs)

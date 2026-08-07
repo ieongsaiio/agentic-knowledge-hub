@@ -159,6 +159,14 @@ def _uses_ingestion_llm(ingestion: Any) -> bool:
         stage = _get(ingestion, stage_name, None)
         if stage is not None and _enabled(_get(stage, "use_llm", False)):
             return True
+    structured = _get(ingestion, "structured_chunking", None)
+    table_summary = (
+        _get(structured, "table_summary", None)
+        if structured is not None
+        else None
+    )
+    if table_summary is not None and _enabled(_get(table_summary, "enabled", False)):
+        return True
     return False
 
 
@@ -192,7 +200,7 @@ def build_index_payload(
         "ingestion": _sanitise_mapping(_as_mapping(ingestion)),
         "embedding": _selected(
             embedding,
-            ("provider", "model", "dimensions"),
+            ("provider", "model", "dimensions", "max_tokens"),
             "embedding",
         ),
         "vector_store": _selected(
@@ -205,7 +213,7 @@ def build_index_payload(
     if _uses_ingestion_llm(ingestion):
         payload["llm"] = _selected(
             _section(settings, "llm"),
-            ("provider", "model", "temperature"),
+            ("provider", "model", "temperature", "api_mode"),
             "llm",
         )
 
