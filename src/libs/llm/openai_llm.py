@@ -74,6 +74,9 @@ class OpenAILLM(BaseLLM):
         self.extra_chat_configs = dict(
             getattr(settings.llm, "extra_chat_configs", {}) or {}
         )
+        self.request_timeout = float(kwargs.pop("request_timeout", 60.0))
+        if self.request_timeout <= 0:
+            raise ValueError("OpenAI request_timeout must be greater than zero")
         
         # API key: explicit > settings > env var
         self.api_key = (
@@ -199,7 +202,7 @@ class OpenAILLM(BaseLLM):
         
         endpoint = "chat/completions" if self.api_mode == "chat_completions" else "responses"
         url = f"{self.base_url.rstrip('/')}/{endpoint}"
-        if self.api_version:
+        if self._use_azure_auth and self.api_version:
             url += f"?api-version={self.api_version}"
         
         if self._use_azure_auth:
@@ -230,7 +233,7 @@ class OpenAILLM(BaseLLM):
             payload.update(extra_payload)
         
         try:
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=self.request_timeout) as client:
                 response = client.post(url, json=payload, headers=headers)
                 
                 if response.status_code != 200:
@@ -242,7 +245,7 @@ class OpenAILLM(BaseLLM):
                 return response.json()
         except httpx.TimeoutException as e:
             raise OpenAILLMError(
-                f"[OpenAI] Request timed out after 60 seconds"
+                f"[OpenAI] Request timed out after {self.request_timeout:g} seconds"
             ) from e
         except httpx.RequestError as e:
             raise OpenAILLMError(

@@ -15,10 +15,11 @@ import hashlib
 import json
 import re
 import sys
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 if sys.platform == "win32" and __name__ == "__main__":
     import io
@@ -93,6 +94,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Clear and rebuild benchmark indexes for selected fingerprints.",
     )
     parser.add_argument(
+        "--index-only",
+        action="store_true",
+        help=(
+            "Prepare the benchmark and build its indexes, then stop before "
+            "retrieval, reranking, and evaluation."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         default=None,
         help="Override evaluation.output.directory for benchmark reports.",
@@ -100,6 +109,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.top_k < 1:
         parser.error("--top-k must be greater than zero")
+    if args.index_only and args.no_search:
+        parser.error("--index-only cannot be combined with --no-search")
     return args
 
 
@@ -166,6 +177,38 @@ def _run_benchmark(args: argparse.Namespace, settings: Any) -> int:
         return 1
 
     built_fingerprints: set[str] = set()
+
+    if args.index_only:
+        try:
+            for plan in plans:
+                _ensure_index(
+                    plan,
+                    pdf_paths,
+                    built_fingerprints,
+                    force_reindex=args.force_reindex,
+                )
+        except Exception as exc:
+            print(
+                f"Benchmark index build failed: {_safe_error(exc, settings)}",
+                file=sys.stderr,
+            )
+            return 1
+
+        payload = {
+            "mode": "benchmark_index_only",
+            "case_count": len(cases),
+            "pdf_count": len(pdf_paths),
+            "experiments": [_plan_dict(plan) for plan in plans],
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+        else:
+            print("BENCHMARK INDEX BUILD COMPLETE")
+            print(f"- cases: {len(cases)}")
+            print(f"- PDFs: {len(pdf_paths)}")
+            for plan in plans:
+                print(f"- {plan.name}: collection={plan.collection_name}")
+        return 0
 
     def execute(plan: Any) -> Any:
         if not args.no_search:

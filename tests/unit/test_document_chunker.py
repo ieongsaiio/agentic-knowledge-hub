@@ -221,6 +221,28 @@ def test_page_spans_are_converted_to_chunk_page_metadata(chunker):
     assert chunks[1].end_offset == len(text)
 
 
+def test_parsed_loader_artifacts_are_not_copied_to_chunk_metadata(chunker):
+    document = Document(
+        id="doc_structured",
+        text="Structured source text.",
+        metadata={
+            "source_path": "report.pdf",
+            "parsed_artifact": {"provider": "legacy"},
+            "parsed_source_artifact": {"provider": "mineru"},
+            "parsed_source_markdown": "Provider source Markdown.",
+            "parsed_structure": {"schema_version": 1, "blocks": []},
+        },
+    )
+
+    chunks = chunker.split_document(document)
+
+    assert chunks
+    assert "parsed_artifact" not in chunks[0].metadata
+    assert "parsed_source_artifact" not in chunks[0].metadata
+    assert "parsed_source_markdown" not in chunks[0].metadata
+    assert "parsed_structure" not in chunks[0].metadata
+
+
 def test_chunk_crossing_page_boundary_gets_page_range(
     fake_settings,
     monkeypatch,

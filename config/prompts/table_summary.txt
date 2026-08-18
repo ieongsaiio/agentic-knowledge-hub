@@ -1,1 +1,35 @@
-Write the shortest faithful table summary that remains as complete and useful for retrieval as possible. Identify the table subject, entities, periods, units, key metrics, important values, and explicit relationships likely to appear in questions. Use only the provided content. Do not calculate, infer, explain, or invent facts. Return concise plain text only.
+Write a concise, faithful prose summary that helps retrieve the supplied table. Use only the supplied source material.
+
+Use `<table_unit_count>` to select exactly one output structure.
+
+For one table unit:
+- Start with `Table summary:` and summarize the table's subject, scope, periods, units, dimensions, important metrics, and important values in natural language.
+- End with `Observed trends and relationships:`. Describe only comparisons, changes, rankings, patterns, or relationships directly supported by values in this table. If none is clearly supported, say so briefly.
+- Do not write a `Unit 1` section or describe the table as a group.
+
+For multiple table units:
+- Start with `Table group summary:` and state the shared subject, periods, units, or scope.
+- Write `Unit N — <caption>:` for every unit and summarize that unit separately. If a unit has no caption, use a short source-grounded label.
+- End with `Observed relationships across units:` and describe only an observable comparison, shared scope, or complementary use. If no relationship is supported, state that the units are adjacent but independent.
+- Never combine rows from different units into an invented schema or claim a causal relationship that the source does not state.
+
+Include the following information when it is explicitly available:
+- The exact company, reporting entity, or document identifier. Preserve its supplied wording; do not expand an abbreviation into a legal name unless that legal name appears in the source.
+- The table subject, report type, reporting periods, currencies, and units.
+- The important row labels, column labels, sections, segments, categories, regions, and named adjustment items that distinguish this table from similar tables.
+- Important values, totals, subtotals, and comparisons explicitly shown by the table.
+- Footnote qualifications that materially change the meaning of a metric or value.
+
+For a very large table, preserve the complete metric and dimension vocabulary first, then retain headline totals, subtotals, and representative important values. Do not attempt to transcribe every cell when that would make the summary unnecessarily long.
+
+Use exact source terminology wherever possible. You may describe a direction, comparison, ranking, or pattern only when it follows directly from displayed values, such as one reported value being higher than another or increasing across explicitly ordered periods. Do not calculate new metrics, infer causes, explain why a change occurred, predict future results, repair OCR, or invent facts. Do not introduce aliases, analytical use cases, or GAAP/non-GAAP classifications unless they appear in the supplied material. Preserve negative signs, percentages, currencies, units, blanks, and dashes without changing their meaning.
+
+Critical transcription rules:
+- Copy numeric values with only the symbols explicitly attached to them in the source. Never add a percent sign, currency symbol, unit, or sign because a column or financial convention appears to imply one.
+- Preserve period labels exactly. Do not rewrite "three months ended" or "twelve months ended" as a quarter or fiscal year unless the supplied material explicitly uses that wording.
+- Preserve incomplete or OCR-damaged unit labels as supplied; do not repair them from financial context.
+- Do not describe a dash as a blank, zero, unavailable value, or not applicable. Omit such cells when they are not useful, or reproduce the exact symbol without interpreting it.
+- Do not define or explain markers such as NM unless the supplied material defines them.
+- Do not include commentary about how the summary handled blanks, symbols, source presentation, or omitted cells.
+
+Use document metadata and surrounding context only to identify or disambiguate the table. Return concise plain text only.

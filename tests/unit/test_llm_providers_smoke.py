@@ -62,6 +62,9 @@ class MockLLMSettings:
     max_tokens: int = 1024
     api_mode: str = "chat_completions"
     api_key: str = None
+    api_version: str = None
+    azure_endpoint: str = None
+    deployment_name: str = None
     base_url: str = None
     extra_chat_configs: Dict[str, Any] = None
 
@@ -241,6 +244,23 @@ class TestOpenAILLM:
         llm = OpenAILLM(settings, api_key="test-key", base_url="https://custom.api.com")
         assert llm.base_url == "https://custom.api.com"
 
+    def test_custom_request_timeout(self):
+        settings = MockSettings()
+        llm = OpenAILLM(settings, api_key="test-key", request_timeout=180)
+
+        with patch("httpx.Client") as mock_client:
+            mock_client.return_value.__enter__.return_value.post.return_value = (
+                make_mock_response()
+            )
+            llm.chat([Message(role="user", content="Hello")])
+
+        mock_client.assert_called_once_with(timeout=180.0)
+
+    def test_rejects_non_positive_request_timeout(self):
+        settings = MockSettings()
+        with pytest.raises(ValueError, match="request_timeout"):
+            OpenAILLM(settings, api_key="test-key", request_timeout=0)
+
     def test_chat_success(self):
         """Should return ChatResponse on successful API call."""
         settings = MockSettings()
@@ -274,6 +294,45 @@ class TestOpenAILLM:
         assert payload["messages"] == [{"role": "user", "content": "Hello"}]
         assert payload["max_tokens"] == 1024
         assert "input" not in payload
+
+    def test_non_azure_endpoint_does_not_receive_api_version(self):
+        settings = MockSettings(
+            llm=MockLLMSettings(
+                api_mode="chat_completions",
+                api_version="none",
+                base_url="https://compatible.example/v1",
+            )
+        )
+        llm = OpenAILLM(settings, api_key="test-key")
+
+        with patch("httpx.Client") as mock_client:
+            post = mock_client.return_value.__enter__.return_value.post
+            post.return_value = make_mock_response()
+            llm.chat([Message(role="user", content="Hello")])
+
+        assert post.call_args.args[0] == (
+            "https://compatible.example/v1/chat/completions"
+        )
+
+    def test_azure_compatible_endpoint_receives_api_version(self):
+        settings = MockSettings(
+            llm=MockLLMSettings(
+                api_mode="chat_completions",
+                api_version="2025-01-01-preview",
+                azure_endpoint="https://azure.example",
+                deployment_name="deployment",
+            )
+        )
+        llm = OpenAILLM(settings, api_key="test-key")
+
+        with patch("httpx.Client") as mock_client:
+            post = mock_client.return_value.__enter__.return_value.post
+            post.return_value = make_mock_response()
+            llm.chat([Message(role="user", content="Hello")])
+
+        assert post.call_args.args[0].endswith(
+            "/chat/completions?api-version=2025-01-01-preview"
+        )
 
     def test_responses_mode_uses_responses_contract(self):
         settings = MockSettings(llm=MockLLMSettings(api_mode="responses"))

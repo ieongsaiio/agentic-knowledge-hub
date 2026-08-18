@@ -23,12 +23,19 @@ def _get_paddle_pdf_loader() -> type[BaseLoader]:
     return PaddlePdfLoader
 
 
+def _get_mineru_pdf_loader() -> type[BaseLoader]:
+    from src.libs.loader.mineru_pdf_loader import MineruPdfLoader
+
+    return MineruPdfLoader
+
+
 class LoaderFactory:
     """Create the PDF loader selected by ingestion settings."""
 
     _PROVIDERS: dict[str, Callable[[], type[BaseLoader]]] = {
         "default": _get_pdf_loader,
         "paddle": _get_paddle_pdf_loader,
+        "mineru": _get_mineru_pdf_loader,
     }
 
     @classmethod
@@ -60,6 +67,8 @@ class LoaderFactory:
             kwargs["image_storage_dir"] = image_storage_dir
         if provider == "paddle":
             kwargs["paddle_config"] = dict(settings.ingestion.loader.paddle)
+        elif provider == "mineru":
+            kwargs["mineru_config"] = dict(settings.ingestion.loader.mineru)
 
         return loader_class(**kwargs)
 

@@ -121,6 +121,7 @@ ingestion:
         poll_interval_seconds: ""
         timeout_seconds: ""
         request_timeout_seconds: ""
+        max_pages_per_request: ""
         optional_payload:
           useDocOrientationClassify: ""
           useDocUnwarping: ""
@@ -130,6 +131,26 @@ ingestion:
           relevelTitles: ""
           concatenatePages: ""
           returnMarkdownImages: ""
+    mineru:
+      backend: ""
+      table_grouping:
+        enabled: ""
+        minimum_horizontal_overlap: ""
+        maximum_vertical_gap_ratio: ""
+      ignored_block_types:
+        - ""
+      api:
+        base_url: ""
+        api_key: ""
+        token_env: ""
+        model_version: ""
+        language: ""
+        is_ocr: ""
+        enable_table: ""
+        enable_formula: ""
+        poll_interval_seconds: ""
+        timeout_seconds: ""
+        request_timeout_seconds: ""
   splitter: ""
   length_unit: ""
   tokenizer_model: ""
@@ -141,11 +162,6 @@ ingestion:
     embedding_safety_margin: ""
     table_dense_representation: ""
     table_context_tokens: ""
-    table_child_chunking:
-      enabled: ""
-      max_tokens: ""
-      overlap_rows: ""
-      repeated_context_rows: ""
     table_summary:
       enabled: ""
       prompt_path: ""

@@ -24,9 +24,11 @@ class _RecordingSummarizer:
     def __init__(self, summary: str) -> None:
         self.summary = summary
         self.calls: list[str] = []
+        self.call_kwargs: list[dict[str, object]] = []
 
-    def summarize(self, table_text: str, **_: object) -> str:
+    def summarize(self, table_text: str, **kwargs: object) -> str:
         self.calls.append(table_text)
+        self.call_kwargs.append(kwargs)
         return self.summary
 
 
@@ -38,8 +40,6 @@ def _settings(
     model_max_tokens: int = 32768,
     table_dense_representation: str = "linearized",
     table_context_tokens: int = 80,
-    table_child_enabled: bool = False,
-    table_child_max_tokens: int = 768,
     table_summary_enabled: bool = False,
 ) -> SimpleNamespace:
     structured_chunking = {
@@ -48,12 +48,6 @@ def _settings(
         "table_dense_representation": table_dense_representation,
         "table_context_tokens": table_context_tokens,
         "table_summary": {"enabled": table_summary_enabled},
-        "table_child_chunking": {
-            "enabled": table_child_enabled,
-            "max_tokens": table_child_max_tokens,
-            "overlap_rows": 1,
-            "repeated_context_rows": 1,
-        },
     }
     if embedding_max_tokens is not None:
         structured_chunking["embedding_max_tokens"] = embedding_max_tokens
@@ -453,9 +447,60 @@ def test_table_unit_uses_paddle_title_and_footnote_for_dense_text() -> None:
         'Table row 2: column 1="Revenue"; column 2="100"'
         in table_fragment.dense_index_text
     )
-    assert table in table_fragment.sparse_index_text
+    assert table not in table_fragment.sparse_index_text
+    assert 'Table row 2: Revenue | 100' in table_fragment.sparse_index_text
+    assert "<table" not in table_fragment.sparse_index_text
+    assert "text-align" not in table_fragment.sparse_index_text
     assert "Financial Results" in table_fragment.sparse_index_text
     assert "Amounts are in millions." in table_fragment.sparse_index_text
+
+
+def test_table_unit_uses_provider_neutral_parsed_structure() -> None:
+    caption = "Consolidated Statement of Income"
+    footnote = "Amounts are reported in millions."
+    table = (
+        "<table><tr><td>Revenue</td><td>100</td></tr>"
+        "<tr><td>Net income</td><td>20</td></tr></table>"
+    )
+    text = f"# Results\n\n{caption}\n\n{table}\n\n{footnote}"
+    document = _document(text)
+    block_start = text.index(caption)
+    document.metadata["parsed_structure"] = {
+        "schema_version": 1,
+        "provider": "mineru",
+        "blocks": [
+            {
+                "block_id": "p0_table_0",
+                "type": "table",
+                "content": table,
+                "page_index": 0,
+                "caption": [caption],
+                "footnotes": [footnote],
+                "bbox": [10, 20, 900, 800],
+                "start_offset": block_start,
+                "end_offset": len(text),
+            }
+        ],
+    }
+    splitter = StructuredMarkdownSplitter(
+        _settings(chunk_size=100),
+        tokenizer=_WhitespaceTokenizer(),
+    )
+
+    fragments = splitter.split_document(document)
+    table_fragment = next(
+        fragment
+        for fragment in fragments
+        if "table" in fragment.metadata["unit_types"]
+    )
+
+    assert table_fragment.metadata["table_title"] == caption
+    assert table_fragment.metadata["table_captions"] == [caption]
+    assert table_fragment.metadata["vision_footnotes"] == [footnote]
+    assert table_fragment.metadata["parsed_block_id"] == "p0_table_0"
+    assert table_fragment.metadata["source_bbox"] == [10, 20, 900, 800]
+    assert caption in table_fragment.text
+    assert footnote in table_fragment.text
 
 
 def test_table_unit_claims_adjacent_caption_and_footnote_before_text_chunking() -> None:
@@ -651,14 +696,61 @@ def test_table_summary_adds_dense_supplement_without_replacing_original() -> Non
     assert summary_fragment.dense_index_text == (
         "The table reports revenue across multiple fiscal years."
     )
-    assert summary_fragment.sparse_index_text == table_fragment.text
+    assert summary_fragment.sparse_index_text == summary_fragment.dense_index_text
     assert summary_fragment.metadata["embedding_source_type"] == (
         "llm_table_summary_supplement"
     )
-    assert summary_fragment.metadata["sparse_index_enabled"] is False
+    assert summary_fragment.metadata["sparse_index_enabled"] is True
     assert summary_fragment.metadata["storage_id"].startswith(
-        summary_fragment.metadata["parent_chunk_id"] + "_summary_"
+        summary_fragment.metadata["table_group_id"] + "_summary_"
     )
+    assert table_fragment.sparse_index_text.count("Table group summary:") == 0
+    assert summary_fragment.dense_index_text not in table_fragment.sparse_index_text
+
+
+def test_table_group_summary_heading_is_not_duplicated_in_sparse_text() -> None:
+    table = "<table><tr><td>Revenue</td><td>100</td></tr></table>"
+    summary = "Table group summary:\nRevenue was 100."
+    splitter = StructuredMarkdownSplitter(
+        _settings(table_summary_enabled=True),
+        tokenizer=_WhitespaceTokenizer(),
+        table_summarizer=_RecordingSummarizer(summary),
+    )
+
+    fragments = splitter.split_document(_document(f"# Results\n\n{table}"))
+    table_fragment = next(
+        fragment
+        for fragment in fragments
+        if fragment.metadata.get("chunk_role") == "table_group"
+    )
+    summary_fragment = next(
+        fragment
+        for fragment in fragments
+        if fragment.metadata.get("chunk_role") == "table_summary"
+    )
+
+    assert table_fragment.sparse_index_text.count("Table group summary:") == 0
+    assert summary_fragment.sparse_index_text.count("Table group summary:") == 1
+    assert "<table" not in table_fragment.sparse_index_text
+
+
+def test_table_fragment_has_source_and_page_metadata_before_summary_call() -> None:
+    table = "<table><tr><td>Revenue</td><td>100</td></tr></table>"
+    splitter = StructuredMarkdownSplitter(
+        _settings(),
+        tokenizer=_WhitespaceTokenizer(),
+    )
+
+    fragment = next(
+        item
+        for item in splitter.split_document(_document(f"# Results\n\n{table}"))
+        if item.metadata.get("chunk_role") == "table_group"
+    )
+
+    assert fragment.metadata["source_path"] == "report.pdf"
+    assert fragment.metadata["page_start"] == 1
+    assert fragment.metadata["page_end"] == 1
+    assert fragment.metadata["page_num"] == 1
 
 
 def test_table_budget_defaults_to_embedding_model_max_tokens() -> None:
@@ -783,68 +875,7 @@ def test_unattached_footnote_like_text_is_retained() -> None:
     assert "This note is not attached" in fragments[0].text
 
 
-def test_table_child_mode_replaces_parent_with_budgeted_retrieval_children() -> None:
-    rows = "".join(
-        "<tr><td>Metric "
-        + str(index)
-        + "</td><td>"
-        + " ".join(f"value_{index}_{word}" for word in range(145))
-        + "</td></tr>"
-        for index in range(1, 7)
-    )
-    table = (
-        "<table><tr><td>Metric</td><td>FY2024</td></tr>"
-        f"{rows}</table>"
-    )
-    text = f"# Results\n\nIntroductory table context.\n\n{table}\n\nFollowing context."
-    splitter = StructuredMarkdownSplitter(
-        _settings(
-            chunk_size=512,
-            table_child_enabled=True,
-            table_child_max_tokens=768,
-        ),
-        tokenizer=_WhitespaceTokenizer(),
-    )
-
-    first = splitter.split_document(_document(text))
-    second = splitter.split_document(_document(text))
-    children = [
-        fragment
-        for fragment in first
-        if fragment.metadata.get("chunk_role") == "table_child"
-    ]
-
-    assert len(children) == 2
-    assert all(fragment.text != fragment.dense_index_text for fragment in children)
-    assert all(fragment.text == fragment.sparse_index_text for fragment in children)
-    assert all(fragment.text.startswith("Section: Results") for fragment in children)
-    assert all("Section: Results" not in fragment.dense_index_text for fragment in children)
-    assert all("Introductory table context." in fragment.dense_index_text for fragment in children)
-    assert all("<table>" in fragment.dense_index_text for fragment in children)
-    assert all(fragment.metadata["table_child_count"] == 2 for fragment in children)
-    assert [fragment.metadata["table_child_index"] for fragment in children] == [0, 1]
-    first_rows = children[0].metadata["source_row_indices"]
-    second_rows = children[1].metadata["source_row_indices"]
-    assert set(first_rows + second_rows) == set(range(1, 7))
-    assert children[1].metadata["overlap_row_indices"] == [first_rows[-1]]
-    assert second_rows[0] == first_rows[-1]
-    assert children[0].metadata["parent_chunk_id"] == children[1].metadata["parent_chunk_id"]
-    assert children[0].metadata["preserve_raw_content"] is True
-    assert children[0].metadata["source_exact"] is False
-    assert children[0].start_offset == children[1].start_offset
-    assert children[0].end_offset == children[1].end_offset
-    assert all(splitter._length(fragment.text) <= 768 for fragment in children)
-    second_children = [
-        fragment
-        for fragment in second
-        if fragment.metadata.get("chunk_role") == "table_child"
-    ]
-    assert [fragment.metadata["storage_id"] for fragment in children] == [
-        fragment.metadata["storage_id"] for fragment in second_children
-    ]
-
-
-def test_table_summary_supplement_points_to_same_parent_as_table_children() -> None:
+def test_table_summary_supplement_points_to_complete_table_group() -> None:
     table = (
         "<table><tr><td>Metric</td><td>FY2024</td></tr>"
         "<tr><td>Revenue</td><td>100</td></tr>"
@@ -854,10 +885,7 @@ def test_table_summary_supplement_points_to_same_parent_as_table_children() -> N
         "FY2024 revenue is 100 and income is 20."
     )
     splitter = StructuredMarkdownSplitter(
-        _settings(
-            table_child_enabled=True,
-            table_summary_enabled=True,
-        ),
+        _settings(table_summary_enabled=True),
         tokenizer=_WhitespaceTokenizer(),
         table_summarizer=summarizer,
     )
@@ -865,10 +893,11 @@ def test_table_summary_supplement_points_to_same_parent_as_table_children() -> N
     fragments = splitter.split_document(
         _document(f"# Results\n\nContext before.\n\n{table}\n\nContext after.")
     )
-    children = [
+    groups = [
         fragment
         for fragment in fragments
-        if fragment.metadata.get("chunk_role") == "table_child"
+        if fragment.metadata.get("chunk_role") != "table_summary"
+        and "table" in fragment.metadata.get("unit_types", [])
     ]
     summary = next(
         fragment
@@ -876,9 +905,9 @@ def test_table_summary_supplement_points_to_same_parent_as_table_children() -> N
         if fragment.metadata.get("chunk_role") == "table_summary"
     )
 
-    assert len(children) == 1
+    assert len(groups) == 1
     assert summarizer.calls == [table]
-    assert summary.metadata["parent_chunk_id"] == children[0].metadata["parent_chunk_id"]
+    assert summary.metadata["table_group_id"] == groups[0].metadata["table_group_id"]
     assert "Context before." in summary.text
     assert table in summary.text
     assert "Context after." in summary.text
@@ -886,48 +915,13 @@ def test_table_summary_supplement_points_to_same_parent_as_table_children() -> N
     assert "Section: Results" not in summary.dense_index_text
 
 
-def test_table_child_dense_text_strips_only_leading_section_path() -> None:
-    table = (
-        "<table><tr><td>Metric</td><td>FY2024</td></tr>"
-        "<tr><td>Revenue</td><td>100</td></tr></table>"
-    )
-    footnote = "(1) Amounts are in millions."
-    text = f"# Results\n\nUseful preceding context.\n\n{table}\n\n{footnote}"
-    blocks = [
-        {"block_label": "paragraph", "block_content": "Useful preceding context."},
-        {"block_label": "table_title", "block_content": "Annual Results"},
-        {"block_label": "table", "block_content": table},
-        {"block_label": "vision_footnote", "block_content": footnote},
-    ]
-    splitter = StructuredMarkdownSplitter(
-        _settings(table_child_enabled=True),
-        tokenizer=_WhitespaceTokenizer(),
-    )
-
-    child = next(
-        fragment
-        for fragment in splitter.split_document(_document(text, parsing_blocks=blocks))
-        if fragment.metadata.get("chunk_role") == "table_child"
-    )
-
-    assert child.text.startswith("Section: Results")
-    assert not child.dense_index_text.startswith("Section:")
-    assert "Useful preceding context." in child.dense_index_text
-    assert "Annual Results" in child.dense_index_text
-    assert "<table>" in child.dense_index_text
-    assert "<td>Revenue</td><td>100</td>" in child.dense_index_text
-    assert f"Footnote: {footnote}" in child.dense_index_text
-    assert child.metadata["header_path"] == ["Results"]
-    assert child.metadata["embedding_source_type"] == "original_table_child_no_section"
-
-
-def test_disabled_table_child_mode_keeps_source_exact_parent_table() -> None:
+def test_complete_table_group_is_never_split_into_children() -> None:
     table = (
         "<table><tr><td>Metric</td><td>Value</td></tr>"
         "<tr><td>Revenue</td><td>100</td></tr></table>"
     )
     splitter = StructuredMarkdownSplitter(
-        _settings(table_child_enabled=False),
+        _settings(),
         tokenizer=_WhitespaceTokenizer(),
     )
 
@@ -935,4 +929,71 @@ def test_disabled_table_child_mode_keeps_source_exact_parent_table() -> None:
 
     assert len(fragments) == 1
     assert fragments[0].text.endswith(table)
-    assert "chunk_role" not in fragments[0].metadata
+    assert fragments[0].metadata["chunk_role"] == "table_group"
+    assert fragments[0].metadata["source_exact"] is True
+
+
+def test_normalized_table_group_metadata_reaches_chunk_and_summary() -> None:
+    table = (
+        '<table><tr class="table-section-caption"><th colspan="2">Revenue</th></tr>'
+        "<tr><td>Total</td><td>100</td></tr>"
+        '<tr class="table-section-caption"><th colspan="2">Expenses</th></tr>'
+        "<tr><td>Total</td><td>60</td></tr></table>"
+    )
+    document = _document(f"# Results\n\n{table}")
+    document.metadata["parsed_structure"] = {
+        "blocks": [
+            {
+                "block_id": "merged-1",
+                "type": "table",
+                "content": table,
+                "start_offset": len("# Results\n\n"),
+                "end_offset": len(document.text),
+                "caption": [],
+                "footnotes": [],
+                "metadata": {
+                    "merged_table": True,
+                    "table_group_id": "table_group_1",
+                    "unit_count": 2,
+                    "source_block_ids": ["t1", "t2"],
+                    "units": [
+                        {"unit_index": 0, "caption": "Revenue"},
+                        {"unit_index": 1, "caption": "Expenses"},
+                    ],
+                },
+            }
+        ]
+    }
+    summarizer = _RecordingSummarizer("A revenue and expense table group.")
+    splitter = StructuredMarkdownSplitter(
+        _settings(table_summary_enabled=True),
+        tokenizer=_WhitespaceTokenizer(),
+        table_summarizer=summarizer,
+    )
+
+    fragments = splitter.split_document(document)
+    group = next(item for item in fragments if item.metadata["chunk_role"] == "table_group")
+    summary = next(item for item in fragments if item.metadata["chunk_role"] == "table_summary")
+
+    assert group.metadata["unit_count"] == 2
+    assert [unit["caption"] for unit in group.metadata["units"]] == [
+        "Revenue",
+        "Expenses",
+    ]
+    assert summary.metadata["table_group_id"] == "table_group_1"
+    assert summarizer.call_kwargs[0]["table_unit_count"] == 2
+
+
+def test_single_table_summary_receives_one_as_unit_count() -> None:
+    table = "<table><tr><td>Revenue</td><td>100</td></tr></table>"
+    document = _document(f"# Results\n\n{table}")
+    summarizer = _RecordingSummarizer("Table summary: Revenue was 100.")
+    splitter = StructuredMarkdownSplitter(
+        _settings(table_summary_enabled=True),
+        tokenizer=_WhitespaceTokenizer(),
+        table_summarizer=summarizer,
+    )
+
+    splitter.split_document(document)
+
+    assert summarizer.call_kwargs[0]["table_unit_count"] == 1

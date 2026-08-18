@@ -235,11 +235,12 @@ class PdfLoaderSettings:
     provider: str = "default"
     parsed_dir: str = "./data/parsed"
     paddle: Dict[str, Any] = field(default_factory=dict)
+    mineru: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.provider not in {"default", "paddle"}:
+        if self.provider not in {"default", "paddle", "mineru"}:
             raise SettingsError(
-                "ingestion.loader.provider must be one of: default, paddle"
+                "ingestion.loader.provider must be one of: default, paddle, mineru"
             )
         if self.provider == "paddle":
             backend = str(
@@ -258,6 +259,52 @@ class PdfLoaderSettings:
                     raise SettingsError(
                         f"ingestion.loader.paddle.{section} must be a mapping"
                     )
+        if self.provider == "mineru":
+            backend = str(self.mineru.get("backend", "api")).lower()
+            if backend != "api":
+                raise SettingsError(
+                    "ingestion.loader.mineru.backend currently supports only: api"
+                )
+            api = self.mineru.get("api")
+            if api is not None and not isinstance(api, dict):
+                raise SettingsError(
+                    "ingestion.loader.mineru.api must be a mapping"
+                )
+            ignored = self.mineru.get("ignored_block_types")
+            if ignored is not None and not isinstance(ignored, list):
+                raise SettingsError(
+                    "ingestion.loader.mineru.ignored_block_types must be a list"
+                )
+            grouping = self.mineru.get("table_grouping", {})
+            if not isinstance(grouping, dict):
+                raise SettingsError(
+                    "ingestion.loader.mineru.table_grouping must be a mapping"
+                )
+            enabled = grouping.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise SettingsError(
+                    "ingestion.loader.mineru.table_grouping.enabled must be a boolean"
+                )
+            overlap = grouping.get("minimum_horizontal_overlap", 0.85)
+            if (
+                not isinstance(overlap, (int, float))
+                or isinstance(overlap, bool)
+                or not 0 <= overlap <= 1
+            ):
+                raise SettingsError(
+                    "ingestion.loader.mineru.table_grouping."
+                    "minimum_horizontal_overlap must be between zero and one"
+                )
+            gap = grouping.get("maximum_vertical_gap_ratio", 0.08)
+            if (
+                not isinstance(gap, (int, float))
+                or isinstance(gap, bool)
+                or gap < 0
+            ):
+                raise SettingsError(
+                    "ingestion.loader.mineru.table_grouping."
+                    "maximum_vertical_gap_ratio must be non-negative"
+                )
 
 
 @dataclass(frozen=True)
@@ -405,6 +452,7 @@ class Settings:
                         else "./data/parsed"
                     ),
                     paddle=_optional_mapping(loader, "paddle", "ingestion.loader"),
+                    mineru=_optional_mapping(loader, "mineru", "ingestion.loader"),
                 ),
             )
 
@@ -587,39 +635,6 @@ def validate_settings(settings: Settings) -> None:
                     "ingestion.structured_chunking.table_context_tokens "
                     "must be a non-negative integer"
                 )
-            table_child_chunking = structured_chunking.get(
-                "table_child_chunking",
-                {},
-            )
-            if not isinstance(table_child_chunking, dict):
-                raise SettingsError(
-                    "ingestion.structured_chunking.table_child_chunking "
-                    "must be a mapping"
-                )
-            child_max_tokens = table_child_chunking.get("max_tokens", 768)
-            if (
-                not isinstance(child_max_tokens, int)
-                or isinstance(child_max_tokens, bool)
-                or child_max_tokens <= 0
-            ):
-                raise SettingsError(
-                    "ingestion.structured_chunking.table_child_chunking."
-                    "max_tokens must be greater than zero"
-                )
-            for field_name, default in (
-                ("overlap_rows", 1),
-                ("repeated_context_rows", 2),
-            ):
-                value = table_child_chunking.get(field_name, default)
-                if (
-                    not isinstance(value, int)
-                    or isinstance(value, bool)
-                    or value < 0
-                ):
-                    raise SettingsError(
-                        "ingestion.structured_chunking.table_child_chunking."
-                        f"{field_name} must be a non-negative integer"
-                    )
             table_summary = structured_chunking.get("table_summary", {})
             if not isinstance(table_summary, dict):
                 raise SettingsError(

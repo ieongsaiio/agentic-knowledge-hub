@@ -233,32 +233,6 @@ def test_table_dense_representation_affects_fingerprint() -> None:
     assert build_index_fingerprint(original) != build_index_fingerprint(linearized)
 
 
-def test_table_child_budget_affects_fingerprint() -> None:
-    settings = _settings()
-    ingestion = settings.ingestion
-    assert ingestion is not None
-    budget_512 = replace(
-        settings,
-        ingestion=replace(
-            ingestion,
-            structured_chunking={
-                "table_child_chunking": {"enabled": True, "max_tokens": 512},
-            },
-        ),
-    )
-    budget_768 = replace(
-        settings,
-        ingestion=replace(
-            ingestion,
-            structured_chunking={
-                "table_child_chunking": {"enabled": True, "max_tokens": 768},
-            },
-        ),
-    )
-
-    assert build_index_fingerprint(budget_512) != build_index_fingerprint(budget_768)
-
-
 def test_llm_changes_only_affect_fingerprint_when_refinement_uses_llm() -> None:
     settings = _settings()
     ingestion = settings.ingestion

@@ -11,6 +11,7 @@ from src.libs.loader.base_loader import BaseLoader
 from src.libs.loader.pdf_loader import PdfLoader
 from src.libs.loader.paddle_pdf_loader import PaddlePdfLoader
 from src.libs.loader.loader_factory import LoaderFactory
+from src.libs.loader.mineru_pdf_loader import MineruPdfLoader
 from src.libs.loader.file_integrity import FileIntegrityChecker, SQLiteIntegrityChecker
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "PdfLoader",
     "PaddlePdfLoader",
     "LoaderFactory",
+    "MineruPdfLoader",
     "FileIntegrityChecker",
     "SQLiteIntegrityChecker",
 ]
