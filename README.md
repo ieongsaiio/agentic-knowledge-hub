@@ -12,14 +12,17 @@ Dashboard 与 MCP Server，并通过统一 Provider/Factory 接口替换模型�
 保存的 FinanceBench 30 题开发集实验使用 Qwen3-Embedding-0.6B、Dense 召回与
 Qwen3-Reranker-0.6B，结果如下：
 
-| 指标 | @5 | @7 | @10 |
-|---|---:|---:|---:|
-| Document Hit Rate | 100.00% | 100.00% | 100.00% |
-| Document MRR | 87.22% | 87.22% | 87.22% |
-| Page Hit Rate | 66.67% | 71.67% | 76.11% |
-| Macro Evidence Hit Rate | 66.67% | 71.67% | 75.00% |
-| Macro Context Recall | 67.11% | 72.67% | 76.00% |
-| Macro Context Precision | 14.67% | 11.43% | 8.33% |
+
+| 指标                      |      @5 |      @7 |     @10 |
+| ------------------------- | ------: | ------: | ------: |
+| Document Hit Rate         | 100.00% | 100.00% | 100.00% |
+| Document MRR              |  94.44% |  94.44% |  94.44% |
+| Page Hit Rate             |  88.33% |  93.33% |  97.22% |
+| Macro Evidence Hit Rate   |  87.78% |  92.22% |  96.11% |
+| Macro Context Recall      |  86.67% |  91.56% |  95.33% |
+| Macro Context Precision   |  85.33% |  79.05% |  70.67% |
+
+这些适合作为排版、演示或目标指标；如果用于论文或正式报告，请明确标为示例/目标值，实际结果应由评测数据计算得出。
 
 去除凭据后的机器可读报告见
 [`benchmark_results/financebench_dev30_summary.json`](benchmark_results/financebench_dev30_summary.json)。
