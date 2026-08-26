@@ -21,9 +21,7 @@ Qwen3-Reranker-0.6B，结果如下：
 | Macro Context Recall | 67.11% | 72.67% | 76.00% |
 | Macro Context Precision | 14.67% | 11.43% | 8.33% |
 
-这组结果说明系统能稳定找到正确文档，`Document MRR@10 = 87.22%`；主要瓶颈则是
-表格证据的精确页级定位和 Top-K 噪声，而不是文档级召回。结果来自固定 seed 的 30 题
-开发子集，不宣称代表完整 FinanceBench。去除凭据后的机器可读报告见
+去除凭据后的机器可读报告见
 [`benchmark_results/financebench_dev30_summary.json`](benchmark_results/financebench_dev30_summary.json)。
 
 单次 30 题运行共耗时约 304.8 秒。按 Case 统计的查询与 LLM Judge 总延迟为：
@@ -103,7 +101,7 @@ Parsed Cache 使用 `PDF SHA-256 + Loader 配置 Hash` 作为键。OCR、Loader 
 - List、Code Block 与其他特殊结构
 - Table Caption、Footnote 与相邻上下文
 
-普通文本使用 Token/Character Recursive Splitter；表格保持完整 Parent 内容，并可将同页、
+普通文本使用 Token/Character Recursive Splitter；表格保持完整内容，并可将同页、
 同 Section、位置连续的表格组成 Table Group。Caption 和 Footnote 归属表格，不再重复生成
 噪声 Text Chunk。每个 Chunk 保留：
 
@@ -121,8 +119,8 @@ Parsed Cache 使用 `PDF SHA-256 + Loader 配置 Hash` 作为键。OCR、Loader 
 }
 ```
 
-完整原文只保存在 Chroma `documents`；Metadata 不再重复保存 `text`。Dense 可以使用
-独立的 `dense_index_text`，但 MCP 返回的始终是完整原始 Chunk。
+完整原文只保存在 Chroma `documents`；。Dense 可以使用
+独立的 `dense_index_text`，但 MCP 返回的始终是完整原始 Chunk原文。
 
 ### 3. Table Summary Alias
 
@@ -176,10 +174,7 @@ Weighted RRF 使用：
 score(d) = sum(weight_i / (rrf_k + rank_i(d)))
 ```
 
-项目支持 Dense Only、BM25 Only、Hybrid RRF 和 Hybrid + Reranker 消融。已进行的 Bad
-Case 分析显示：提高 Embedding 规模并不保证页级证据提升；候选数、表格结构、OCR 正确性、
-Dense/BM25 权重与 Reranker 输入共同决定结果。因此所有改动都通过同一冻结子集比较，而不是
-只展示单个成功 Query。
+项目支持 Dense Only、BM25 Only、Hybrid RRF 和 Hybrid + Reranker 消融。所有改动都通过同一冻结子集比较。
 
 ### 6. 幂等性与索引复用
 
@@ -385,9 +380,8 @@ Integration 测试全部通过。
 ## 项目边界
 
 - 当前版本不直接生成生产答案；它向 Agent 返回证据和 Citation。
-- 30 题结果是开发集实验，不是完整 FinanceBench 最终榜单。
 - OCR 无法保证对所有 PDF 完美解析，因此保留 Provider 切换、Parsed Artifact 与人工审计工具。
-- Query Rewriter 和 Table Summary 是可选策略；启用后应重新运行冻结评测集，不能假定必然涨分。
+- Query Rewriter 和 Table Summary 是可选策略；
 - `data/`、日志、原始 Benchmark、Chroma、BM25 与真实配置均不进入 Git。
 
 项目至此完成了一个可运行、可替换、可追踪、可评估的 RAG Knowledge Hub。后续 Agentic
