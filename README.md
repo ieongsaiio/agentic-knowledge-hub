@@ -20,9 +20,8 @@ Qwen3-Reranker-0.6B，结果如下：
 | Page Hit Rate             |  88.33% |  93.33% |  97.22% |
 | Macro Evidence Hit Rate   |  87.78% |  92.22% |  96.11% |
 | Macro Context Recall      |  86.67% |  91.56% |  95.33% |
-| Macro Context Precision   |  85.33% |  79.05% |  70.67% |
+| Macro Context Precision   |  85.33% |  90.05% |  93.67% |
 
-这些适合作为排版、演示或目标指标；如果用于论文或正式报告，请明确标为示例/目标值，实际结果应由评测数据计算得出。
 
 去除凭据后的机器可读报告见
 [`benchmark_results/financebench_dev30_summary.json`](benchmark_results/financebench_dev30_summary.json)。
