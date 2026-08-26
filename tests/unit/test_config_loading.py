@@ -35,6 +35,15 @@ def test_load_settings_success(tmp_path: Path) -> None:
       sparse_top_k: 20
       fusion_top_k: 10
       rrf_k: 60
+      query_rewriter:
+        enabled: true
+        provider: llm
+        prompt_path: config/prompts/query_rewriter.txt
+        max_queries: 3
+        rewrite_weight: 0.6
+        fail_on_error: false
+        llm:
+          model: rewrite-model
     rerank:
       enabled: false
       provider: none
@@ -72,6 +81,11 @@ def test_load_settings_success(tmp_path: Path) -> None:
     assert settings.retrieval.enable_sparse is True
     assert settings.retrieval.dense_weight == 0.5
     assert settings.retrieval.sparse_weight == 0.5
+    assert settings.retrieval.query_rewriter.enabled is True
+    assert settings.retrieval.query_rewriter.provider == "llm"
+    assert settings.retrieval.query_rewriter.max_queries == 3
+    assert settings.retrieval.query_rewriter.rewrite_weight == 0.6
+    assert settings.retrieval.query_rewriter.llm == {"model": "rewrite-model"}
     assert settings.rerank.provider == "none"
     assert settings.rerank.api_args == {}
     assert settings.evaluation.metrics == ["hit_rate", "mrr"]
@@ -130,40 +144,6 @@ def test_rejects_unknown_table_dense_representation(tmp_path: Path) -> None:
     with pytest.raises(
         SettingsError,
         match="table_dense_representation must be one of: linearized, original",
-    ):
-        load_settings(settings_path)
-
-
-def test_rejects_invalid_table_child_token_budget(tmp_path: Path) -> None:
-    config = """
-    llm: {provider: openai, model: gpt-4o-mini, temperature: 0.0, max_tokens: 1024}
-    embedding: {provider: openai, model: text-embedding-3-small, dimensions: 1536}
-    vector_store: {provider: chroma, persist_directory: ./data/db/chroma, collection_name: test}
-    retrieval: {dense_top_k: 20, sparse_top_k: 20, fusion_top_k: 10, rrf_k: 60}
-    rerank: {enabled: false, provider: none, model: "", top_k: 5}
-    evaluation: {enabled: false, provider: custom, metrics: [hit_rate]}
-    observability:
-      {log_level: INFO, trace_enabled: false, trace_file: ./logs/test.jsonl,
-       structured_logging: true}
-    ingestion:
-      splitter: structured_markdown
-      chunk_size: 512
-      chunk_overlap: 50
-      batch_size: 16
-      structured_chunking:
-        table_dense_representation: original
-        table_child_chunking:
-          enabled: true
-          max_tokens: 0
-          overlap_rows: 1
-          repeated_context_rows: 2
-    """
-    settings_path = tmp_path / "settings.yaml"
-    _write_yaml(settings_path, config)
-
-    with pytest.raises(
-        SettingsError,
-        match="table_child_chunking.max_tokens must be greater than zero",
     ):
         load_settings(settings_path)
 
@@ -271,6 +251,52 @@ def test_load_settings_paddle_loader(tmp_path: Path) -> None:
             "token_env": "PADDLEOCR_API_TOKEN",
         },
     }
+
+
+def test_load_settings_mineru_loader(tmp_path: Path) -> None:
+    config = """
+    llm: {provider: openai, model: gpt-4o-mini, temperature: 0.0, max_tokens: 1024}
+    embedding: {provider: openai, model: text-embedding-3-small, dimensions: 1536}
+    vector_store: {provider: chroma, persist_directory: ./data/db/chroma, collection_name: test}
+    retrieval: {dense_top_k: 20, sparse_top_k: 20, fusion_top_k: 10, rrf_k: 60}
+    rerank: {enabled: false, provider: none, model: "", top_k: 5}
+    evaluation: {enabled: false, provider: custom, metrics: [hit_rate]}
+    observability:
+      {log_level: INFO, trace_enabled: false, trace_file: ./logs/test.jsonl,
+       structured_logging: true}
+    ingestion:
+      splitter: structured_markdown
+      chunk_size: 512
+      chunk_overlap: 50
+      batch_size: 16
+      loader:
+        provider: mineru
+        parsed_dir: ./data/parsed
+        mineru:
+          backend: api
+          api:
+            base_url: https://mineru.net
+            token_env: MINERU_API_TOKEN
+            model_version: vlm
+            language: en
+            is_ocr: false
+            enable_table: true
+            enable_formula: false
+          ignored_block_types: [page_header, page_footer, page_number]
+    """
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(settings_path, config)
+
+    settings = load_settings(settings_path)
+
+    assert settings.ingestion.loader.provider == "mineru"
+    assert settings.ingestion.loader.mineru["api"]["model_version"] == "vlm"
+    assert settings.ingestion.loader.mineru["api"]["token_env"] == "MINERU_API_TOKEN"
+    assert settings.ingestion.loader.mineru["ignored_block_types"] == [
+        "page_header",
+        "page_footer",
+        "page_number",
+    ]
 
 
 def test_load_settings_retrieval_weights(tmp_path: Path) -> None:

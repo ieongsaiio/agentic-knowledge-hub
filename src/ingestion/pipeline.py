@@ -52,7 +52,7 @@ def prepare_sparse_index_stats(
     sparse_stats: List[Dict[str, Any]],
     vector_ids: List[str],
 ) -> List[Dict[str, Any]]:
-    """Align BM25 IDs and exclude records intended for dense retrieval only."""
+    """Align BM25 IDs and exclude records explicitly disabled for sparse search."""
     if not (len(chunks) == len(sparse_stats) == len(vector_ids)):
         raise ValueError("Chunk, sparse-stat, and vector-ID counts must match")
     prepared: List[Dict[str, Any]] = []

@@ -84,12 +84,12 @@ def test_chunk_id_deterministic(upserter_with_mock_store, sample_chunk):
     assert id1 == id2 == id3, "Chunk ID must be deterministic"
 
 
-def test_explicit_table_child_storage_id_is_preserved(upserter_with_mock_store):
+def test_explicit_alias_storage_id_is_preserved(upserter_with_mock_store):
     upserter, _ = upserter_with_mock_store
-    storage_id = "doc_report_table_abc123_child_0001_deadbeef"
+    storage_id = "doc_report_table_group_abc123_summary_deadbeef"
     chunk = Chunk(
         id="temporary",
-        text="Generated table child",
+        text="Generated table summary alias",
         metadata={
             "source_path": "report.pdf",
             "chunk_index": 1,

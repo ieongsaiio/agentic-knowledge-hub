@@ -147,6 +147,17 @@ class VectorStoreSettings:
 
 
 @dataclass(frozen=True)
+class QueryRewriterSettings:
+    enabled: bool = False
+    provider: str = "llm"
+    prompt_path: str = "config/prompts/query_rewriter.txt"
+    max_queries: int = 4
+    rewrite_weight: float = 0.7
+    fail_on_error: bool = False
+    llm: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class RetrievalSettings:
     dense_top_k: int
     sparse_top_k: int
@@ -156,6 +167,9 @@ class RetrievalSettings:
     enable_sparse: bool = True
     dense_weight: float = 0.5
     sparse_weight: float = 0.5
+    query_rewriter: QueryRewriterSettings = field(
+        default_factory=QueryRewriterSettings
+    )
 
     def __post_init__(self) -> None:
         if self.dense_weight < 0 or self.sparse_weight < 0:
@@ -235,11 +249,12 @@ class PdfLoaderSettings:
     provider: str = "default"
     parsed_dir: str = "./data/parsed"
     paddle: Dict[str, Any] = field(default_factory=dict)
+    mineru: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.provider not in {"default", "paddle"}:
+        if self.provider not in {"default", "paddle", "mineru"}:
             raise SettingsError(
-                "ingestion.loader.provider must be one of: default, paddle"
+                "ingestion.loader.provider must be one of: default, paddle, mineru"
             )
         if self.provider == "paddle":
             backend = str(
@@ -258,6 +273,52 @@ class PdfLoaderSettings:
                     raise SettingsError(
                         f"ingestion.loader.paddle.{section} must be a mapping"
                     )
+        if self.provider == "mineru":
+            backend = str(self.mineru.get("backend", "api")).lower()
+            if backend != "api":
+                raise SettingsError(
+                    "ingestion.loader.mineru.backend currently supports only: api"
+                )
+            api = self.mineru.get("api")
+            if api is not None and not isinstance(api, dict):
+                raise SettingsError(
+                    "ingestion.loader.mineru.api must be a mapping"
+                )
+            ignored = self.mineru.get("ignored_block_types")
+            if ignored is not None and not isinstance(ignored, list):
+                raise SettingsError(
+                    "ingestion.loader.mineru.ignored_block_types must be a list"
+                )
+            grouping = self.mineru.get("table_grouping", {})
+            if not isinstance(grouping, dict):
+                raise SettingsError(
+                    "ingestion.loader.mineru.table_grouping must be a mapping"
+                )
+            enabled = grouping.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise SettingsError(
+                    "ingestion.loader.mineru.table_grouping.enabled must be a boolean"
+                )
+            overlap = grouping.get("minimum_horizontal_overlap", 0.85)
+            if (
+                not isinstance(overlap, (int, float))
+                or isinstance(overlap, bool)
+                or not 0 <= overlap <= 1
+            ):
+                raise SettingsError(
+                    "ingestion.loader.mineru.table_grouping."
+                    "minimum_horizontal_overlap must be between zero and one"
+                )
+            gap = grouping.get("maximum_vertical_gap_ratio", 0.08)
+            if (
+                not isinstance(gap, (int, float))
+                or isinstance(gap, bool)
+                or gap < 0
+            ):
+                raise SettingsError(
+                    "ingestion.loader.mineru.table_grouping."
+                    "maximum_vertical_gap_ratio must be non-negative"
+                )
 
 
 @dataclass(frozen=True)
@@ -371,6 +432,73 @@ class Settings:
             ],
         )
 
+        query_rewriter = _optional_mapping(
+            retrieval,
+            "query_rewriter",
+            "retrieval",
+        )
+        query_rewriter_settings = QueryRewriterSettings(
+            enabled=(
+                _require_bool(
+                    query_rewriter,
+                    "enabled",
+                    "retrieval.query_rewriter",
+                )
+                if "enabled" in query_rewriter
+                else False
+            ),
+            provider=(
+                _require_str(
+                    query_rewriter,
+                    "provider",
+                    "retrieval.query_rewriter",
+                )
+                if "provider" in query_rewriter
+                else "llm"
+            ),
+            prompt_path=(
+                _require_str(
+                    query_rewriter,
+                    "prompt_path",
+                    "retrieval.query_rewriter",
+                )
+                if "prompt_path" in query_rewriter
+                else "config/prompts/query_rewriter.txt"
+            ),
+            max_queries=(
+                _require_int(
+                    query_rewriter,
+                    "max_queries",
+                    "retrieval.query_rewriter",
+                )
+                if "max_queries" in query_rewriter
+                else 4
+            ),
+            rewrite_weight=(
+                _require_number(
+                    query_rewriter,
+                    "rewrite_weight",
+                    "retrieval.query_rewriter",
+                )
+                if "rewrite_weight" in query_rewriter
+                else 0.7
+            ),
+            fail_on_error=(
+                _require_bool(
+                    query_rewriter,
+                    "fail_on_error",
+                    "retrieval.query_rewriter",
+                )
+                if "fail_on_error" in query_rewriter
+                else False
+            ),
+            llm=_optional_mapping(
+                query_rewriter,
+                "llm",
+                "retrieval.query_rewriter",
+            ),
+        )
+
         ingestion_settings = None
         if "ingestion" in data:
             ingestion = _require_mapping(data, "ingestion", "settings")
@@ -405,6 +533,7 @@ class Settings:
                         else "./data/parsed"
                     ),
                     paddle=_optional_mapping(loader, "paddle", "ingestion.loader"),
+                    mineru=_optional_mapping(loader, "mineru", "ingestion.loader"),
                 ),
             )
 
@@ -485,6 +614,7 @@ class Settings:
                     if "sparse_weight" in retrieval
                     else 0.5
                 ),
+                query_rewriter=query_rewriter_settings,
             ),
             rerank=RerankSettings(
                 enabled=_require_bool(rerank, "enabled", "rerank"),
@@ -534,6 +664,22 @@ def validate_settings(settings: Settings) -> None:
         raise SettingsError("Missing required field: vector_store.provider")
     if not settings.retrieval.rrf_k:
         raise SettingsError("Missing required field: retrieval.rrf_k")
+    query_rewriter = settings.retrieval.query_rewriter
+    if query_rewriter.max_queries <= 0:
+        raise SettingsError(
+            "retrieval.query_rewriter.max_queries must be greater than zero"
+        )
+    if query_rewriter.rewrite_weight < 0:
+        raise SettingsError(
+            "retrieval.query_rewriter.rewrite_weight must be non-negative"
+        )
+    allowed_llm_fields = set(LLMSettings.__dataclass_fields__)
+    unknown_rewriter_llm_fields = set(query_rewriter.llm) - allowed_llm_fields
+    if unknown_rewriter_llm_fields:
+        unknown = ", ".join(sorted(unknown_rewriter_llm_fields))
+        raise SettingsError(
+            f"Unknown retrieval.query_rewriter.llm fields: {unknown}"
+        )
     if not settings.rerank.provider:
         raise SettingsError("Missing required field: rerank.provider")
     if not settings.evaluation.provider:
@@ -587,39 +733,6 @@ def validate_settings(settings: Settings) -> None:
                     "ingestion.structured_chunking.table_context_tokens "
                     "must be a non-negative integer"
                 )
-            table_child_chunking = structured_chunking.get(
-                "table_child_chunking",
-                {},
-            )
-            if not isinstance(table_child_chunking, dict):
-                raise SettingsError(
-                    "ingestion.structured_chunking.table_child_chunking "
-                    "must be a mapping"
-                )
-            child_max_tokens = table_child_chunking.get("max_tokens", 768)
-            if (
-                not isinstance(child_max_tokens, int)
-                or isinstance(child_max_tokens, bool)
-                or child_max_tokens <= 0
-            ):
-                raise SettingsError(
-                    "ingestion.structured_chunking.table_child_chunking."
-                    "max_tokens must be greater than zero"
-                )
-            for field_name, default in (
-                ("overlap_rows", 1),
-                ("repeated_context_rows", 2),
-            ):
-                value = table_child_chunking.get(field_name, default)
-                if (
-                    not isinstance(value, int)
-                    or isinstance(value, bool)
-                    or value < 0
-                ):
-                    raise SettingsError(
-                        "ingestion.structured_chunking.table_child_chunking."
-                        f"{field_name} must be a non-negative integer"
-                    )
             table_summary = structured_chunking.get("table_summary", {})
             if not isinstance(table_summary, dict):
                 raise SettingsError(

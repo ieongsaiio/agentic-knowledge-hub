@@ -356,6 +356,50 @@ class TestHybridSearchBasic:
         # The common_chunk should appear exactly once
         assert chunk_ids.count("common_chunk") <= 1
 
+    def test_table_group_summary_alias_deduplicates_with_source_group(
+        self,
+        query_processor: QueryProcessor,
+        rrf_fusion: RRFFusion,
+    ):
+        group_id = "table_group_abc"
+        summary = RetrievalResult(
+            chunk_id="summary_alias",
+            score=0.95,
+            text="<table><tr><td>Revenue</td><td>100</td></tr></table>",
+            metadata={
+                "chunk_role": "table_summary",
+                "retrieval_group_id": group_id,
+            },
+        )
+        original = RetrievalResult(
+            chunk_id="source_group",
+            score=4.2,
+            text="<table><tr><td>Revenue</td><td>100</td></tr></table>",
+            metadata={
+                "chunk_role": "table_group",
+                "retrieval_group_id": group_id,
+            },
+        )
+        dense = MockDenseRetriever(results=[summary, original])
+        sparse = MockSparseRetriever(results=[original])
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense,
+            sparse_retriever=sparse,
+            fusion=rrf_fusion,
+        )
+
+        results = hybrid.search("revenue", top_k=10)
+
+        group_results = [
+            result
+            for result in results
+            if result.metadata.get("retrieval_group_id") == group_id
+        ]
+        assert len(group_results) == 1
+        assert group_results[0].chunk_id == "source_group"
+        assert group_results[0].metadata["chunk_role"] == "table_group"
+
 
 # =============================================================================
 # Graceful Degradation Tests

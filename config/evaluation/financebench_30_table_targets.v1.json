@@ -1,0 +1,306 @@
+{
+  "counting_rule": "Unique parent tables that directly support the benchmark question/reference answer; same-page unrelated tables and prose-only evidence are excluded.",
+  "question_count": 30,
+  "evidence_record_count": 34,
+  "page_overlap_candidate_parent_table_count": 42,
+  "questions_with_direct_table_evidence": 24,
+  "direct_table_evidence_record_count": 26,
+  "unique_direct_parent_table_count": 26,
+  "prose_only_evidence_record_count": 8,
+  "targets": [
+    {
+      "case_id": "financebench_id_01928",
+      "evidence_index": 1,
+      "query": "What Was AMCOR's Adjusted Non GAAP EBITDA for FY 2023",
+      "document_name": "AMCOR_2023Q4_EARNINGS",
+      "page_number": 12,
+      "parent_table_id": "doc_d155b7808e781678_table_338f5ce1f066",
+      "word_coverage": 1.0,
+      "numeric_coverage": 0.952
+    },
+    {
+      "case_id": "financebench_id_00941",
+      "evidence_index": 1,
+      "query": "Which debt securities are registered to trade on a national securities exchange under 3M's name as of Q2 of 2023?",
+      "document_name": "3M_2023Q2_10Q",
+      "page_number": 1,
+      "parent_table_id": "doc_3e66115793459f42_table_d4bc29a9ded7",
+      "word_coverage": 0.939,
+      "numeric_coverage": 0.889
+    },
+    {
+      "case_id": "financebench_id_10130",
+      "evidence_index": 1,
+      "query": "Based on the information provided primarily in the balance sheet and the statement of income, what is FY2020 days payable outstanding (DPO) for Corning? DPO is defined as: 365 * (average accounts payable between FY2019 and FY2020) / (FY2020 COGS + change in inventory between FY2019 and FY2020). Round your answer to two decimal places.",
+      "document_name": "CORNING_2020_10K",
+      "page_number": 70,
+      "parent_table_id": "doc_ef471ab9ff6067f1_table_01cba4cfd697",
+      "word_coverage": 0.718,
+      "numeric_coverage": 0.948
+    },
+    {
+      "case_id": "financebench_id_10130",
+      "evidence_index": 2,
+      "query": "Based on the information provided primarily in the balance sheet and the statement of income, what is FY2020 days payable outstanding (DPO) for Corning? DPO is defined as: 365 * (average accounts payable between FY2019 and FY2020) / (FY2020 COGS + change in inventory between FY2019 and FY2020). Round your answer to two decimal places.",
+      "document_name": "CORNING_2020_10K",
+      "page_number": 72,
+      "parent_table_id": "doc_ef471ab9ff6067f1_table_6ed390565267",
+      "word_coverage": 0.653,
+      "numeric_coverage": 0.857
+    },
+    {
+      "case_id": "financebench_id_00678",
+      "evidence_index": 1,
+      "query": "Does Boeing have an improving gross margin profile as of FY2022? If gross margin is not a useful metric for a company like this, then state that and explain why.",
+      "document_name": "BOEING_2022_10K",
+      "page_number": 55,
+      "parent_table_id": "doc_09285ff7ee737d33_table_74bbabbeeb0e",
+      "word_coverage": 0.828,
+      "numeric_coverage": 1.0
+    },
+    {
+      "case_id": "financebench_id_03838",
+      "evidence_index": 1,
+      "query": "What is the FY2019 - FY2020 total revenue growth rate for Block (formerly known as Square)? Answer in units of percents and round to one decimal place. Approach the question asked by assuming the standpoint of an investment banking analyst who only has access to the statement of income.",
+      "document_name": "BLOCK_2020_10K",
+      "page_number": 86,
+      "parent_table_id": "doc_c19a9fb25db3270e_table_0b73fb29e863",
+      "word_coverage": 0.721,
+      "numeric_coverage": 0.989
+    },
+    {
+      "case_id": "financebench_id_01279",
+      "evidence_index": 1,
+      "query": "Among operations, investing, and financing activities, which brought in the most (or lost the least) cash flow for AMD in FY22?",
+      "document_name": "AMD_2022_10K",
+      "page_number": 58,
+      "parent_table_id": "doc_a3bd74088fae0ad4_table_5e4cc326333d",
+      "word_coverage": 0.968,
+      "numeric_coverage": 1.0
+    },
+    {
+      "case_id": "financebench_id_00684",
+      "evidence_index": 1,
+      "query": "Does AMCOR have an improving gross margin profile as of FY2023? If gross margin is not a useful metric for a company like this, then state that and explain why.",
+      "document_name": "AMCOR_2023_10K",
+      "page_number": 50,
+      "parent_table_id": "doc_84d7a0291a12f4e6_table_12e96b7a8396",
+      "word_coverage": 0.892,
+      "numeric_coverage": 1.0
+    },
+    {
+      "case_id": "financebench_id_02987",
+      "evidence_index": 1,
+      "query": "What is the FY2019 fixed asset turnover ratio for Activision Blizzard? Fixed asset turnover ratio is defined as: FY2019 revenue / (average PP&E between FY2018 and FY2019). Round your answer to two decimal places. Base your judgments on the information provided primarily in the statement of income and the statement of financial position.",
+      "document_name": "ACTIVISIONBLIZZARD_2019_10K",
+      "page_number": 69,
+      "parent_table_id": "doc_017f1bbc1e37f294_table_91e1908b2080",
+      "word_coverage": 0.825,
+      "numeric_coverage": 0.984
+    },
+    {
+      "case_id": "financebench_id_02987",
+      "evidence_index": 2,
+      "query": "What is the FY2019 fixed asset turnover ratio for Activision Blizzard? Fixed asset turnover ratio is defined as: FY2019 revenue / (average PP&E between FY2018 and FY2019). Round your answer to two decimal places. Base your judgments on the information provided primarily in the statement of income and the statement of financial position.",
+      "document_name": "ACTIVISIONBLIZZARD_2019_10K",
+      "page_number": 70,
+      "parent_table_id": "doc_017f1bbc1e37f294_table_395ac8c7c570",
+      "word_coverage": 0.837,
+      "numeric_coverage": 0.986
+    },
+    {
+      "case_id": "financebench_id_00799",
+      "evidence_index": 1,
+      "query": "Has AMCOR's quick ratio improved or declined between FY2023 and FY2022? If the quick ratio is not something that a financial analyst would ask about a company like this, then state that and explain why.",
+      "document_name": "AMCOR_2023_10K",
+      "page_number": 52,
+      "parent_table_id": "doc_84d7a0291a12f4e6_table_78f230cfb822",
+      "word_coverage": 0.916,
+      "numeric_coverage": 0.988
+    },
+    {
+      "case_id": "financebench_id_10285",
+      "evidence_index": 1,
+      "query": "We need to calculate a financial metric by using information only provided within the balance sheet. Please answer the following question: what is Boeing's year end FY2018 net property, plant, and equipment (in USD millions)?",
+      "document_name": "BOEING_2018_10K",
+      "page_number": 52,
+      "parent_table_id": "doc_6f1ace34b3b01778_table_340cd70dce1d",
+      "word_coverage": 0.877,
+      "numeric_coverage": 0.962
+    },
+    {
+      "case_id": "financebench_id_04784",
+      "evidence_index": 1,
+      "query": "Based on the information provided primarily in the statement of income, what is the FY2018 - FY2019 change in unadjusted operating income % margin for Walmart? Answer in units of percents and round to one decimal place.",
+      "document_name": "WALMART_2019_10K",
+      "page_number": 48,
+      "parent_table_id": "doc_f1d1b052c2b68c5d_table_7b7a1f5b0ba8",
+      "word_coverage": 0.878,
+      "numeric_coverage": 0.97
+    },
+    {
+      "case_id": "financebench_id_00685",
+      "evidence_index": 1,
+      "query": "Are Best Buy's gross margins historically consistent (not fluctuating more than roughly 2% each year)? If gross margins are not a relevant metric for a company like this, then please state that and explain why.",
+      "document_name": "BESTBUY_2023_10K",
+      "page_number": 40,
+      "parent_table_id": "doc_7ca465d31a08be29_table_76a440223d0a",
+      "word_coverage": 0.936,
+      "numeric_coverage": 1.0
+    },
+    {
+      "case_id": "financebench_id_01911",
+      "evidence_index": 1,
+      "query": "What was MGM's interest coverage ratio using FY2022 Adjusted EBIT as the numerator and annual Interest Expense as the denominator?",
+      "document_name": "MGMRESORTS_2022Q4_EARNINGS",
+      "page_number": 14,
+      "parent_table_id": "doc_fe9126b17c3656e5_table_c7722b8a6e36",
+      "word_coverage": 0.992,
+      "numeric_coverage": 1.0
+    },
+    {
+      "case_id": "financebench_id_04660",
+      "evidence_index": 1,
+      "query": "Considering the data in the balance sheet, what is Block's (formerly known as Square) FY2016 working capital ratio? Define working capital ratio as total current assets divided by total current liabilities. Round your answer to two decimal places.",
+      "document_name": "BLOCK_2016_10K",
+      "page_number": 68,
+      "parent_table_id": "doc_5ef866a19b1110dc_table_5a741f6637df",
+      "word_coverage": 0.603,
+      "numeric_coverage": 0.873
+    },
+    {
+      "case_id": "financebench_id_04302",
+      "evidence_index": 1,
+      "query": "We need to calculate a reasonable approximation (or exact number if possible) of a financial metric. Basing your judgment by information plainly provided in the statement of income, what is Nike's three year average of cost of goods sold as a % of revenue from FY2016 to FY2018? Answer in units of percents and round to one decimal place.",
+      "document_name": "NIKE_2018_10K",
+      "page_number": 46,
+      "parent_table_id": "doc_31de66f1e37cabf1_table_2870a31c2092",
+      "word_coverage": 0.822,
+      "numeric_coverage": 0.979
+    },
+    {
+      "case_id": "financebench_id_02981",
+      "evidence_index": 1,
+      "query": "Taking into account the information outlined in the income statement, what is the FY2019 - FY2021 3 year average unadjusted operating income % margin for Corning? Answer in units of percents and round to one decimal place.",
+      "document_name": "CORNING_2021_10K",
+      "page_number": 65,
+      "parent_table_id": "doc_8023fac91ad417f9_table_3e90a3c0cce7",
+      "word_coverage": 0.7,
+      "numeric_coverage": 0.912
+    },
+    {
+      "case_id": "financebench_id_04672",
+      "evidence_index": 1,
+      "query": "Assume that you are a public equities analyst. Answer the following question by primarily using information that is shown in the balance sheet: what is the year end FY2018 net PPNE for 3M? Answer in USD billions.",
+      "document_name": "3M_2018_10K",
+      "page_number": 58,
+      "parent_table_id": "doc_faf10c53fc6f1a8a_table_c9f56ce4389a",
+      "word_coverage": 0.886,
+      "numeric_coverage": 0.975
+    },
+    {
+      "case_id": "financebench_id_00394",
+      "evidence_index": 1,
+      "query": "In 2022 Q2, which of JPM's business segments had the highest net income?",
+      "document_name": "JPMORGAN_2022Q2_10Q",
+      "page_number": 21,
+      "parent_table_id": "doc_7d715f552d4eeb6b_table_2a359e42fcea",
+      "word_coverage": 0.894,
+      "numeric_coverage": 0.9
+    },
+    {
+      "case_id": "financebench_id_04171",
+      "evidence_index": 1,
+      "query": "Basing your judgments off of the balance sheet, what is the year end FY2018 amount of accounts payable for MGM Resorts? Answer in USD millions.",
+      "document_name": "MGMRESORTS_2018_10K",
+      "page_number": 57,
+      "parent_table_id": "doc_1b540737f91716aa_table_f7b826184885",
+      "word_coverage": 0.881,
+      "numeric_coverage": 0.957
+    },
+    {
+      "case_id": "financebench_id_08286",
+      "evidence_index": 1,
+      "query": "By drawing conclusions from the information stated only in the income statement, what is Amazon's FY2019 net income attributable to shareholders (in USD millions)?",
+      "document_name": "AMAZON_2019_10K",
+      "page_number": 38,
+      "parent_table_id": "doc_d7df8c6cf3e351a8_table_f7c1f5380a0a",
+      "word_coverage": 0.873,
+      "numeric_coverage": 0.986
+    },
+    {
+      "case_id": "financebench_id_01484",
+      "evidence_index": 1,
+      "query": "How did JnJ's US sales growth compare to international sales growth in FY2022?",
+      "document_name": "JOHNSON_JOHNSON_2022Q4_EARNINGS",
+      "page_number": 2,
+      "parent_table_id": "doc_7ae6bf6f9a998d19_table_c7d7f83926f6",
+      "word_coverage": 0.6,
+      "numeric_coverage": 0.486
+    },
+    {
+      "case_id": "financebench_id_00460",
+      "evidence_index": 1,
+      "query": "Was there any change in the number of Best Buy stores between Q2 of FY2024 and FY2023?",
+      "document_name": "BESTBUY_2024Q2_10Q",
+      "page_number": 17,
+      "parent_table_id": "doc_cf9efb922bdd28d7_table_213a3780ecbd",
+      "word_coverage": 0.402,
+      "numeric_coverage": 0.786
+    },
+    {
+      "case_id": "financebench_id_01964",
+      "evidence_index": 1,
+      "query": "What was the largest liability in American Express's Balance Sheet in 2022?",
+      "document_name": "AMERICANEXPRESS_2022_10K",
+      "page_number": 98,
+      "parent_table_id": "doc_d3bbc7ab23d6160e_table_8f77b3dcbada",
+      "word_coverage": 0.988,
+      "numeric_coverage": 1.0
+    },
+    {
+      "case_id": "financebench_id_00216",
+      "evidence_index": 1,
+      "query": "Does Verizon have a reasonably healthy liquidity profile based on its quick ratio for FY 2022? If the quick ratio is not relevant to measure liquidity, please state that and explain why.",
+      "document_name": "VERIZON_2022_10K",
+      "page_number": 56,
+      "parent_table_id": "doc_403d7346e8a05947_table_1c36a9b0d1bf",
+      "word_coverage": 0.972,
+      "numeric_coverage": 1.0
+    }
+  ],
+  "prose_only": [
+    {
+      "case_id": "financebench_id_01902",
+      "evidence_index": 1
+    },
+    {
+      "case_id": "financebench_id_00603",
+      "evidence_index": 1
+    },
+    {
+      "case_id": "financebench_id_01476",
+      "evidence_index": 1
+    },
+    {
+      "case_id": "financebench_id_01858",
+      "evidence_index": 1
+    },
+    {
+      "case_id": "financebench_id_01912",
+      "evidence_index": 1
+    },
+    {
+      "case_id": "financebench_id_01912",
+      "evidence_index": 2
+    },
+    {
+      "case_id": "financebench_id_01912",
+      "evidence_index": 3
+    },
+    {
+      "case_id": "financebench_id_01935",
+      "evidence_index": 1
+    }
+  ]
+}

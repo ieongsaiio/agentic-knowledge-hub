@@ -20,6 +20,27 @@ from src.core.types import RetrievalResult
 logger = logging.getLogger(__name__)
 
 
+def _retrieval_identity(result: RetrievalResult) -> str:
+    """Use a semantic group identity when aliases represent the same content."""
+    group_id = result.metadata.get("retrieval_group_id")
+    if isinstance(group_id, str) and group_id.strip():
+        return group_id.strip()
+    return result.chunk_id
+
+
+def _prefer_representative(
+    current: RetrievalResult,
+    candidate: RetrievalResult,
+) -> RetrievalResult:
+    """Prefer the source-exact table group over its dense summary alias."""
+    if (
+        current.metadata.get("chunk_role") == "table_summary"
+        and candidate.metadata.get("chunk_role") == "table_group"
+    ):
+        return candidate
+    return current
+
+
 class RRFFusion:
     """Reciprocal Rank Fusion (RRF) for combining multiple ranking lists.
     
@@ -135,8 +156,12 @@ class RRFFusion:
         chunk_data: Dict[str, RetrievalResult] = {}  # Preserve text/metadata
         
         for list_idx, ranking_list in enumerate(non_empty_lists):
+            seen_in_list: set[str] = set()
             for rank, result in enumerate(ranking_list, start=1):
-                chunk_id = result.chunk_id
+                chunk_id = _retrieval_identity(result)
+                if chunk_id in seen_in_list:
+                    continue
+                seen_in_list.add(chunk_id)
                 
                 # Calculate RRF contribution: 1 / (k + rank)
                 rrf_contribution = 1.0 / (self.k + rank)
@@ -146,6 +171,10 @@ class RRFFusion:
                     rrf_scores[chunk_id] = 0.0
                     # Store first occurrence's data (text, metadata)
                     chunk_data[chunk_id] = result
+                else:
+                    chunk_data[chunk_id] = _prefer_representative(
+                        chunk_data[chunk_id], result
+                    )
                 
                 rrf_scores[chunk_id] += rrf_contribution
         
@@ -157,7 +186,7 @@ class RRFFusion:
             original = chunk_data[chunk_id]
             fused_results.append(
                 RetrievalResult(
-                    chunk_id=chunk_id,
+                    chunk_id=original.chunk_id,
                     score=rrf_score,
                     text=original.text,
                     metadata=original.metadata.copy(),
@@ -253,8 +282,12 @@ class RRFFusion:
         chunk_data: Dict[str, RetrievalResult] = {}
         
         for list_idx, (ranking_list, weight) in enumerate(zip(non_empty_lists, filtered_weights)):
+            seen_in_list: set[str] = set()
             for rank, result in enumerate(ranking_list, start=1):
-                chunk_id = result.chunk_id
+                chunk_id = _retrieval_identity(result)
+                if chunk_id in seen_in_list:
+                    continue
+                seen_in_list.add(chunk_id)
                 
                 # Weighted RRF contribution
                 rrf_contribution = weight * (1.0 / (self.k + rank))
@@ -262,13 +295,17 @@ class RRFFusion:
                 if chunk_id not in rrf_scores:
                     rrf_scores[chunk_id] = 0.0
                     chunk_data[chunk_id] = result
+                else:
+                    chunk_data[chunk_id] = _prefer_representative(
+                        chunk_data[chunk_id], result
+                    )
                 
                 rrf_scores[chunk_id] += rrf_contribution
         
         # Create and sort results
         fused_results = [
             RetrievalResult(
-                chunk_id=chunk_id,
+                chunk_id=chunk_data[chunk_id].chunk_id,
                 score=rrf_score,
                 text=chunk_data[chunk_id].text,
                 metadata=chunk_data[chunk_id].metadata.copy(),

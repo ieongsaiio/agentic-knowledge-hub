@@ -8,6 +8,7 @@ import re
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
 from markdown_it import MarkdownIt
@@ -15,19 +16,11 @@ from markdown_it import MarkdownIt
 from src.core.types import Document
 from src.libs.loader.markdown_section_tree import build_markdown_section_tree
 from src.libs.splitter.base_splitter import BaseSplitter
-from src.libs.splitter.html_table_chunker import HTMLTableChunker
+from src.libs.splitter.html_table_parser import HTMLTableParser
 from src.libs.splitter.recursive_splitter import RecursiveSplitter
 from src.libs.splitter.table_linearizer import TableLinearizer
 
 logger = logging.getLogger(__name__)
-
-
-def strip_table_child_section_path(text: str) -> str:
-    """Remove only a leading generated ``Section:`` paragraph."""
-    if not text.startswith("Section:"):
-        return text
-    parts = re.split(r"\r?\n[ \t]*\r?\n", text, maxsplit=1)
-    return parts[1] if len(parts) == 2 else text
 
 
 class _LLMTableSummarizer:
@@ -60,17 +53,72 @@ class _LLMTableSummarizer:
         footnotes: list[str] | None = None,
         previous_context: str | None = None,
         next_context: str | None = None,
+        document_name: str | None = None,
+        section_path: str | None = None,
+        page_range: str | None = None,
+        table_units: list[dict[str, Any]] | None = None,
+        table_unit_count: int = 1,
     ) -> str:
+        """Return only the generated summary for ingestion."""
+        summary, _response = self.summarize_with_response(
+            table_text,
+            table_title=table_title,
+            footnotes=footnotes,
+            previous_context=previous_context,
+            next_context=next_context,
+            document_name=document_name,
+            section_path=section_path,
+            page_range=page_range,
+            table_units=table_units,
+            table_unit_count=table_unit_count,
+        )
+        return summary
+
+    def summarize_with_response(
+        self,
+        table_text: str,
+        *,
+        table_title: str | None = None,
+        footnotes: list[str] | None = None,
+        previous_context: str | None = None,
+        next_context: str | None = None,
+        document_name: str | None = None,
+        section_path: str | None = None,
+        page_range: str | None = None,
+        table_units: list[dict[str, Any]] | None = None,
+        table_unit_count: int = 1,
+    ) -> tuple[str, Any]:
+        """Return the summary and raw provider response for benchmarking."""
         from src.libs.llm.base_llm import Message
 
         context_parts = [
+            f"<document_name>{document_name}</document_name>"
+            if document_name
+            else "",
+            f"<section_path>{section_path}</section_path>"
+            if section_path
+            else "",
+            f"<page_range>{page_range}</page_range>"
+            if page_range
+            else "",
             f"<table_title>{table_title}</table_title>"
             if table_title
+            else "",
+            f"<table_unit_count>{table_unit_count}</table_unit_count>",
+            (
+                "<table_units>\n"
+                + "\n".join(
+                    f'<unit index="{index + 1}" caption="{unit.get("caption", "")}" />'
+                    for index, unit in enumerate(table_units or [])
+                )
+                + "\n</table_units>"
+            )
+            if table_units
             else "",
             f"<previous_context>{previous_context}</previous_context>"
             if previous_context
             else "",
-            f"<table>{table_text}</table>",
+            f"<table_source>{table_text}</table_source>",
             *[
                 f"<footnote>{footnote}</footnote>"
                 for footnote in (footnotes or [])
@@ -93,7 +141,7 @@ class _LLMTableSummarizer:
         summary = summary.strip()
         if not summary:
             raise RuntimeError("Table summary LLM returned empty content")
-        return summary
+        return summary, response
 
 
 @dataclass
@@ -175,22 +223,10 @@ class StructuredMarkdownSplitter(BaseSplitter):
         self._table_summary_fail_on_error = bool(
             table_summary_config.get("fail_on_error", False)
         )
-        table_child_config = config.get("table_child_chunking", {}) or {}
-        self.table_child_enabled = bool(table_child_config.get("enabled", False))
-        self.table_child_max_tokens = int(
-            table_child_config.get("max_tokens", 768)
-        )
-        self._table_child_chunker = HTMLTableChunker(
-            max_tokens=self.table_child_max_tokens,
-            overlap_rows=int(table_child_config.get("overlap_rows", 1)),
-            repeated_context_rows=int(
-                table_child_config.get("repeated_context_rows", 2)
-            ),
-            length_function=self._length,
-        )
         self._table_summarizer = table_summarizer
         self._settings = settings
         self._linearizer = TableLinearizer()
+        self._html_table_parser = HTMLTableParser()
         self._text_splitter = RecursiveSplitter(
             settings,
             tokenizer=tokenizer,
@@ -665,27 +701,14 @@ class StructuredMarkdownSplitter(BaseSplitter):
         for unit in units:
             if unit.unit_type == "table":
                 flush()
-                table_text = str(
-                    unit.metadata.get("_table_source_text", unit.text)
+                fragments.append(
+                    self._build_fragment(
+                        [unit],
+                        header_path=header_path,
+                        section_id=section_id,
+                        document=document,
+                    )
                 )
-                if self.table_child_enabled and "<table" in table_text.casefold():
-                    fragments.extend(
-                        self._build_table_child_fragments(
-                            unit,
-                            header_path=header_path,
-                            section_id=section_id,
-                            document=document,
-                        )
-                    )
-                else:
-                    fragments.append(
-                        self._build_fragment(
-                            [unit],
-                            header_path=header_path,
-                            section_id=section_id,
-                            document=document,
-                        )
-                    )
                 if self._table_summary_enabled:
                     fragments.append(
                         self._build_table_summary_fragment(
@@ -711,18 +734,18 @@ class StructuredMarkdownSplitter(BaseSplitter):
         return fragments
 
     @staticmethod
-    def _table_parent_id(
+    def _table_group_id(
         document: Document,
         table_text: str,
         table_start: int,
         table_end: int,
     ) -> str:
-        parent_digest = hashlib.sha256(
+        group_digest = hashlib.sha256(
             (
                 f"{document.id}:{table_start}:{table_end}:" + table_text
             ).encode("utf-8")
         ).hexdigest()[:12]
-        return f"{document.id}_table_{parent_digest}"
+        return f"{document.id}_table_group_{group_digest}"
 
     def _build_table_summary_fragment(
         self,
@@ -732,7 +755,7 @@ class StructuredMarkdownSplitter(BaseSplitter):
         section_id: str,
         document: Document,
     ) -> SplitFragment:
-        """Create one dense-only summary alias for a complete source table."""
+        """Create one summary retrieval alias for a complete table group."""
         table_text = str(unit.metadata.get("_table_source_text", unit.text))
         public_metadata = {
             key: value
@@ -742,34 +765,36 @@ class StructuredMarkdownSplitter(BaseSplitter):
         if not public_metadata:
             public_metadata = self._table_metadata(document, unit)
 
-        parent_start = unit.start
-        parent_end = unit.end
-        table_start = int(unit.metadata.get("_table_start_offset", parent_start))
-        table_end = int(unit.metadata.get("_table_end_offset", parent_end))
-        parent_chunk_id = self._table_parent_id(
-            document,
-            table_text,
-            table_start,
-            table_end,
-        )
-        raw_parent = document.text[parent_start:parent_end]
+        group_start = unit.start
+        group_end = unit.end
+        table_start = int(unit.metadata.get("_table_start_offset", group_start))
+        table_end = int(unit.metadata.get("_table_end_offset", group_end))
+        table_group_id = str(public_metadata.get("table_group_id") or "")
+        if not table_group_id:
+            table_group_id = self._table_group_id(
+                document,
+                table_text,
+                table_start,
+                table_end,
+            )
+        raw_group = document.text[group_start:group_end]
         metadata = {
             **public_metadata,
             "section_id": section_id,
             "header_path": header_path,
             "unit_types": ["table"],
             "chunk_role": "table_summary",
-            "parent_chunk_id": parent_chunk_id,
-            "retrieval_group_id": parent_chunk_id,
+            "table_group_id": table_group_id,
+            "retrieval_group_id": table_group_id,
             "retrieval_returns_parent": True,
-            "parent_start_offset": parent_start,
-            "parent_end_offset": parent_end,
+            "group_start_offset": group_start,
+            "group_end_offset": group_end,
             "table_start_offset": table_start,
             "table_end_offset": table_end,
             "preserve_raw_content": True,
             "source_exact": True,
             "embedding_source_type": "llm_table_summary_supplement",
-            "sparse_index_enabled": False,
+            "sparse_index_enabled": True,
             "table_summary_prompt_version": str(
                 self._table_summary_config.get("prompt_version", "v1")
             ),
@@ -782,11 +807,11 @@ class StructuredMarkdownSplitter(BaseSplitter):
             "_summary_table_text": table_text,
         }
         return SplitFragment(
-            text=raw_parent,
-            start_offset=parent_start,
-            end_offset=parent_end,
+            text=raw_group,
+            start_offset=group_start,
+            end_offset=group_end,
             dense_index_text="__pending_table_summary__",
-            sparse_index_text=raw_parent,
+            sparse_index_text="__pending_table_summary__",
             metadata=metadata,
         )
 
@@ -807,6 +832,20 @@ class StructuredMarkdownSplitter(BaseSplitter):
 
         def summarize(fragment: SplitFragment) -> str:
             metadata = fragment.metadata
+            source_path = str(metadata.get("source_path") or "")
+            raw_header_path = metadata.get("header_path") or ""
+            section_path = (
+                " > ".join(str(item) for item in raw_header_path)
+                if isinstance(raw_header_path, list)
+                else str(raw_header_path)
+            )
+            page_start = metadata.get("page_start")
+            page_end = metadata.get("page_end")
+            page_range = (
+                str(page_start)
+                if page_start == page_end
+                else f"{page_start}-{page_end}"
+            )
             return self._table_summarizer.summarize(
                 str(metadata["_summary_table_text"]),
                 table_title=str(metadata.get("table_title") or "") or None,
@@ -818,6 +857,18 @@ class StructuredMarkdownSplitter(BaseSplitter):
                 previous_context=str(metadata.get("previous_context") or "")
                 or None,
                 next_context=str(metadata.get("next_context") or "") or None,
+                document_name=Path(source_path).stem if source_path else None,
+                section_path=section_path or None,
+                page_range=page_range if page_start is not None else None,
+                table_units=[
+                    unit
+                    for unit in metadata.get("units", [])
+                    if isinstance(unit, dict)
+                ],
+                table_unit_count=max(
+                    1,
+                    int(metadata.get("unit_count") or 1),
+                ),
             )
 
         summaries: dict[int, str] = {}
@@ -843,6 +894,7 @@ class StructuredMarkdownSplitter(BaseSplitter):
             ) from first_error
 
         materialized: list[SplitFragment] = []
+        group_summaries: dict[str, str] = {}
         for fragment in fragments:
             if fragment.metadata.get("chunk_role") != "table_summary":
                 materialized.append(fragment)
@@ -861,116 +913,22 @@ class StructuredMarkdownSplitter(BaseSplitter):
                 if key != "_summary_table_text"
             }
             metadata["storage_id"] = (
-                f"{metadata['parent_chunk_id']}_summary_{summary_hash}"
+                f"{metadata['table_group_id']}_summary_{summary_hash}"
             )
             metadata["table_summary"] = summary
+            group_summaries[str(metadata["table_group_id"])] = summary
             fragment.metadata = metadata
             fragment.dense_index_text = summary
+            fragment.sparse_index_text = summary
             materialized.append(fragment)
-        return materialized
-
-    def _build_table_child_fragments(
-        self,
-        unit: _Unit,
-        *,
-        header_path: list[str],
-        section_id: str,
-        document: Document,
-    ) -> list[SplitFragment]:
-        """Build retrievable row children while retaining a parsed-cache parent."""
-        table_text = str(unit.metadata.get("_table_source_text", unit.text))
-        public_metadata = {
-            key: value
-            for key, value in unit.metadata.items()
-            if not key.startswith("_")
-        }
-        if not public_metadata:
-            public_metadata = self._table_metadata(document, unit)
-
-        prefix_parts: list[str] = []
-        if header_path:
-            prefix_parts.append(f"Section: {' > '.join(header_path)}")
-        previous_context = public_metadata.get("previous_context")
-        if previous_context:
-            prefix_parts.append(str(previous_context))
-
-        suffix_parts = [
-            f"Footnote: {footnote}"
-            for footnote in public_metadata.get("vision_footnotes", [])
-            if isinstance(footnote, str) and footnote.strip()
-        ]
-        next_context = public_metadata.get("next_context")
-        if next_context:
-            suffix_parts.append(str(next_context))
-
-        title = str(public_metadata.get("table_title") or "")
-        children = self._table_child_chunker.split(
-            table_text,
-            title=title,
-            prefix_text="\n\n".join(prefix_parts),
-            suffix_text="\n\n".join(suffix_parts),
-        )
-        parsed_parent = self._table_child_chunker.parse(table_text)
-        parent_start = unit.start
-        parent_end = unit.end
-        table_start = int(
-            unit.metadata.get("_table_start_offset", parent_start)
-        )
-        table_end = int(unit.metadata.get("_table_end_offset", parent_end))
-        parent_chunk_id = self._table_parent_id(
-            document,
-            table_text,
-            table_start,
-            table_end,
-        )
-
-        fragments: list[SplitFragment] = []
-        for child in children:
-            content_hash = hashlib.sha256(
-                child.index_text.encode("utf-8")
-            ).hexdigest()[:8]
-            storage_id = (
-                f"{parent_chunk_id}_child_{child.child_index:04d}_{content_hash}"
-            )
-            metadata = {
-                **public_metadata,
-                "section_id": section_id,
-                "header_path": header_path,
-                "unit_types": ["table"],
-                "chunk_role": "table_child",
-                "parent_chunk_id": parent_chunk_id,
-                "table_child_index": child.child_index,
-                "table_child_count": len(children),
-                "source_row_indices": list(child.source_row_indices),
-                "overlap_row_indices": list(child.overlap_row_indices),
-                "repeated_prefix_row_indices": list(
-                    child.repeated_context_row_indices
-                ),
-                "table_child_token_count": child.token_count,
-                "parent_table_row_count": len(parsed_parent.rows),
-                "parent_table_column_count": parsed_parent.width,
-                "parent_start_offset": parent_start,
-                "parent_end_offset": parent_end,
-                "table_start_offset": table_start,
-                "table_end_offset": table_end,
-                "storage_id": storage_id,
-                "preserve_raw_content": True,
-                "source_exact": False,
-                "embedding_source_type": "original_table_child_no_section",
-            }
-            fragments.append(
-                SplitFragment(
-                    text=child.index_text,
-                    start_offset=parent_start,
-                    end_offset=parent_end,
-                    dense_index_text=strip_table_child_section_path(
-                        child.index_text
-                    ),
-                    sparse_index_text=child.index_text,
-                    metadata=metadata,
+        for fragment in materialized:
+            if fragment.metadata.get("chunk_role") == "table_group":
+                summary = group_summaries.get(
+                    str(fragment.metadata.get("table_group_id") or "")
                 )
-            )
-        return fragments
+                if summary:
+                    fragment.metadata["table_summary"] = summary
+        return materialized
 
     def _unit_index_length(self, unit: _Unit) -> int:
         if unit.unit_type == "table":
@@ -1005,8 +963,22 @@ class StructuredMarkdownSplitter(BaseSplitter):
             "preserve_raw_content": True,
             "embedding_source_type": "raw_text",
         }
+        source_path = document.metadata.get("source_path")
+        if isinstance(source_path, str) and source_path:
+            metadata["source_path"] = source_path
+        pages = self._pages_for_range(
+            document.metadata.get("page_spans"),
+            start,
+            end,
+        )
+        if pages:
+            metadata["page_start"] = min(pages)
+            metadata["page_end"] = max(pages)
+            if metadata["page_start"] == metadata["page_end"]:
+                metadata["page_num"] = metadata["page_start"]
 
         dense_parts: list[str] = []
+        sparse_table_sources: list[str] = []
         if header_path:
             dense_parts.append(f"Section: {' > '.join(header_path)}")
         for unit in units:
@@ -1019,7 +991,32 @@ class StructuredMarkdownSplitter(BaseSplitter):
                 if not table_metadata:
                     table_metadata = self._table_metadata(document, unit)
                 metadata.update(table_metadata)
-                table_text = unit.metadata.get("_table_source_text", unit.text)
+                table_group_id = str(metadata.get("table_group_id") or "")
+                if not table_group_id:
+                    table_start = int(
+                        unit.metadata.get("_table_start_offset", unit.start)
+                    )
+                    table_end = int(
+                        unit.metadata.get("_table_end_offset", unit.end)
+                    )
+                    table_group_id = self._table_group_id(
+                        document,
+                        str(unit.metadata.get("_table_source_text", unit.text)),
+                        table_start,
+                        table_end,
+                    )
+                metadata.update(
+                    {
+                        "chunk_role": "table_group",
+                        "table_group_id": table_group_id,
+                        "retrieval_group_id": table_group_id,
+                        "source_exact": True,
+                    }
+                )
+                table_text = str(
+                    unit.metadata.get("_table_source_text", unit.text)
+                )
+                sparse_table_sources.append(table_text)
                 dense_parts.extend(self._table_dense_parts(table_text, metadata))
             else:
                 body = unit.text
@@ -1030,6 +1027,21 @@ class StructuredMarkdownSplitter(BaseSplitter):
 
         sparse_index_text = raw
         if "table" in unit_types:
+            for table_source in sparse_table_sources:
+                try:
+                    visible_table = self._html_table_parser.visible_text(table_source)
+                except ValueError:
+                    visible_table = self._linearizer.linearize(table_source)
+                if table_source in sparse_index_text:
+                    sparse_index_text = sparse_index_text.replace(
+                        table_source,
+                        visible_table,
+                        1,
+                    )
+                else:
+                    sparse_index_text = "\n\n".join(
+                        [sparse_index_text, visible_table]
+                    )
             sparse_context: list[str] = []
             table_title = metadata.get("table_title")
             if isinstance(table_title, str) and table_title.strip():
@@ -1045,7 +1057,9 @@ class StructuredMarkdownSplitter(BaseSplitter):
                 if self._normalized(value) not in self._normalized(raw)
             ]
             if missing_context:
-                sparse_index_text = "\n\n".join([raw, *missing_context])
+                sparse_index_text = "\n\n".join(
+                    [sparse_index_text, *missing_context]
+                )
         return SplitFragment(
             text=raw,
             start_offset=start,
@@ -1102,6 +1116,12 @@ class StructuredMarkdownSplitter(BaseSplitter):
         document: Document,
         table_unit: _Unit,
     ) -> dict[str, Any]:
+        normalized = self._normalized_table_metadata(document, table_unit)
+        if normalized is not None:
+            return normalized
+
+        # Compatibility for parsed caches created before the provider-neutral
+        # parsed_structure contract was introduced.
         artifact = document.metadata.get("parsed_artifact")
         if not isinstance(artifact, dict):
             return {}
@@ -1165,6 +1185,75 @@ class StructuredMarkdownSplitter(BaseSplitter):
             result["vision_footnotes"] = footnotes
         return result
 
+    @staticmethod
+    def _normalized_table_metadata(
+        document: Document,
+        table_unit: _Unit,
+    ) -> dict[str, Any] | None:
+        structure = document.metadata.get("parsed_structure")
+        if not isinstance(structure, dict):
+            return None
+        blocks = structure.get("blocks")
+        if not isinstance(blocks, list):
+            return None
+
+        candidates: list[dict[str, Any]] = []
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("type") != "table":
+                continue
+            start = block.get("start_offset")
+            end = block.get("end_offset")
+            if not isinstance(start, int) or not isinstance(end, int):
+                continue
+            if table_unit.start < end and table_unit.end > start:
+                candidates.append(block)
+        if not candidates:
+            return {}
+
+        block = min(
+            candidates,
+            key=lambda item: (
+                int(item["end_offset"]) - int(item["start_offset"]),
+                int(item["start_offset"]),
+            ),
+        )
+        result: dict[str, Any] = {}
+        captions = [
+            value.strip()
+            for value in block.get("caption", [])
+            if isinstance(value, str) and value.strip()
+        ]
+        if captions:
+            result["table_title"] = "\n".join(captions)
+            result["table_captions"] = captions
+        footnotes = [
+            value.strip()
+            for value in block.get("footnotes", [])
+            if isinstance(value, str) and value.strip()
+        ]
+        if footnotes:
+            result["vision_footnotes"] = footnotes
+        bbox = block.get("bbox")
+        if isinstance(bbox, list) and len(bbox) == 4:
+            result["source_bbox"] = bbox
+        block_id = block.get("block_id")
+        if isinstance(block_id, str) and block_id:
+            result["parsed_block_id"] = block_id
+        block_metadata = block.get("metadata")
+        if isinstance(block_metadata, dict):
+            for key in (
+                "merged_table",
+                "table_group_id",
+                "unit_count",
+                "source_block_ids",
+                "source_bboxes",
+                "units",
+                "merge_assessments",
+            ):
+                if key in block_metadata:
+                    result[key] = block_metadata[key]
+        return result
+
     def _length(self, text: str) -> int:
         if self._tokenizer is None:
             measure = getattr(self._text_splitter, "_measure", None)
@@ -1206,3 +1295,29 @@ class StructuredMarkdownSplitter(BaseSplitter):
                 page = span.get("page")
                 return page if isinstance(page, int) else None
         return None
+
+    @staticmethod
+    def _pages_for_range(
+        page_spans: Any,
+        start_offset: int,
+        end_offset: int,
+    ) -> list[int]:
+        if not isinstance(page_spans, list):
+            return []
+        pages: list[int] = []
+        for span in page_spans:
+            if not isinstance(span, dict):
+                continue
+            span_start = span.get("start_offset")
+            span_end = span.get("end_offset")
+            page = span.get("page")
+            if (
+                isinstance(span_start, int)
+                and isinstance(span_end, int)
+                and isinstance(page, int)
+                and not isinstance(page, bool)
+                and start_offset < span_end
+                and end_offset > span_start
+            ):
+                pages.append(page)
+        return sorted(set(pages))

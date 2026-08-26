@@ -289,6 +289,9 @@ class DocumentChunker:
         # not to every Chroma chunk. Page provenance is represented by the
         # scalar page_start/page_end/page_num fields below.
         chunk_metadata.pop("parsed_artifact", None)
+        chunk_metadata.pop("parsed_source_artifact", None)
+        chunk_metadata.pop("parsed_source_markdown", None)
+        chunk_metadata.pop("parsed_structure", None)
         # The complete loader-stage hierarchy is consumed by structural
         # chunking and must not be duplicated into every Chroma record.
         chunk_metadata.pop("section_tree", None)
