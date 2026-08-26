@@ -52,6 +52,25 @@ retrieval:
   rrf_k: ""
   dense_weight: ""
   sparse_weight: ""
+  query_rewriter:
+    enabled: ""
+    provider: ""
+    prompt_path: ""
+    max_queries: ""
+    rewrite_weight: ""
+    fail_on_error: ""
+    llm:
+      provider: ""
+      api_mode: ""
+      model: ""
+      deployment_name: ""
+      azure_endpoint: ""
+      base_url: ""
+      api_version: ""
+      api_key: ""
+      temperature: ""
+      max_tokens: ""
+      extra_chat_configs: {}
 
 rerank:
   enabled: ""

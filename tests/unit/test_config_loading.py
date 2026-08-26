@@ -35,6 +35,15 @@ def test_load_settings_success(tmp_path: Path) -> None:
       sparse_top_k: 20
       fusion_top_k: 10
       rrf_k: 60
+      query_rewriter:
+        enabled: true
+        provider: llm
+        prompt_path: config/prompts/query_rewriter.txt
+        max_queries: 3
+        rewrite_weight: 0.6
+        fail_on_error: false
+        llm:
+          model: rewrite-model
     rerank:
       enabled: false
       provider: none
@@ -72,6 +81,11 @@ def test_load_settings_success(tmp_path: Path) -> None:
     assert settings.retrieval.enable_sparse is True
     assert settings.retrieval.dense_weight == 0.5
     assert settings.retrieval.sparse_weight == 0.5
+    assert settings.retrieval.query_rewriter.enabled is True
+    assert settings.retrieval.query_rewriter.provider == "llm"
+    assert settings.retrieval.query_rewriter.max_queries == 3
+    assert settings.retrieval.query_rewriter.rewrite_weight == 0.6
+    assert settings.retrieval.query_rewriter.llm == {"model": "rewrite-model"}
     assert settings.rerank.provider == "none"
     assert settings.rerank.api_args == {}
     assert settings.evaluation.metrics == ["hit_rate", "mrr"]

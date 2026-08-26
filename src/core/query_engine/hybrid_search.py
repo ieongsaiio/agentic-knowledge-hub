@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from src.core.query_engine.query_processor import QueryProcessor
     from src.core.query_engine.sparse_retriever import SparseRetriever
     from src.core.settings import Settings
+    from src.libs.query_rewriter import BaseQueryRewriter, QueryRewritePlan
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +80,18 @@ class HybridSearchConfig:
     sparse_weight: float = 0.5
     parallel_retrieval: bool = True
     metadata_filter_post: bool = True
+    rewrite_weight: float = 0.7
+    max_rewrite_queries: int = 4
 
     def __post_init__(self) -> None:
         if self.dense_weight < 0 or self.sparse_weight < 0:
             raise ValueError("retrieval weights must be non-negative")
         if self.dense_weight == 0 and self.sparse_weight == 0:
             raise ValueError("at least one retrieval weight must be greater than zero")
+        if self.rewrite_weight < 0:
+            raise ValueError("rewrite_weight must be non-negative")
+        if self.max_rewrite_queries <= 0:
+            raise ValueError("max_rewrite_queries must be greater than zero")
 
 
 @dataclass
@@ -107,6 +114,8 @@ class HybridSearchResult:
     sparse_error: Optional[str] = None
     used_fallback: bool = False
     processed_query: Optional[ProcessedQuery] = None
+    rewrite_plan: Optional[Any] = None
+    searched_queries: List[str] = field(default_factory=list)
 
 
 class HybridSearch:
@@ -152,6 +161,7 @@ class HybridSearch:
         sparse_retriever: Optional[SparseRetriever] = None,
         fusion: Optional[RRFFusion] = None,
         config: Optional[HybridSearchConfig] = None,
+        query_rewriter: Optional[BaseQueryRewriter] = None,
     ) -> None:
         """Initialize HybridSearch with components.
         
@@ -175,12 +185,28 @@ class HybridSearch:
         
         # Extract config from settings or use provided/default
         self.config = config or self._extract_config(settings)
+        self.query_rewriter = query_rewriter or self._create_query_rewriter(settings)
         
         logger.info(
             f"HybridSearch initialized: dense={self.dense_retriever is not None}, "
             f"sparse={self.sparse_retriever is not None}, "
+            f"rewriter={self.query_rewriter is not None}, "
             f"config={self.config}"
         )
+
+    @staticmethod
+    def _create_query_rewriter(
+        settings: Optional[Settings],
+    ) -> Optional[BaseQueryRewriter]:
+        if settings is None:
+            return None
+        retrieval = getattr(settings, "retrieval", None)
+        config = getattr(retrieval, "query_rewriter", None)
+        if config is None or not getattr(config, "enabled", False):
+            return None
+        from src.libs.query_rewriter import QueryRewriterFactory
+
+        return QueryRewriterFactory.create(settings)
     
     def _extract_config(self, settings: Optional[Settings]) -> HybridSearchConfig:
         """Extract HybridSearchConfig from Settings.
@@ -208,6 +234,16 @@ class HybridSearch:
             sparse_weight=getattr(retrieval_config, 'sparse_weight', 0.5),
             parallel_retrieval=True,
             metadata_filter_post=True,
+            rewrite_weight=getattr(
+                getattr(retrieval_config, "query_rewriter", None),
+                "rewrite_weight",
+                0.7,
+            ),
+            max_rewrite_queries=getattr(
+                getattr(retrieval_config, "query_rewriter", None),
+                "max_queries",
+                4,
+            ),
         )
     
     def search(
@@ -217,6 +253,8 @@ class HybridSearch:
         filters: Optional[Dict[str, Any]] = None,
         trace: Optional[Any] = None,
         return_details: bool = False,
+        query_variants: Optional[List[str]] = None,
+        rewrite_context: Optional[str] = None,
     ) -> List[RetrievalResult] | HybridSearchResult:
         """Perform hybrid search combining Dense and Sparse retrieval.
         
@@ -226,6 +264,9 @@ class HybridSearch:
             filters: Optional metadata filters (e.g., {"collection": "docs"}).
             trace: Optional TraceContext for observability.
             return_details: If True, return HybridSearchResult with debug info.
+            query_variants: Optional externally prepared alternatives. Providing this
+                bypasses the internal LLM rewriter to avoid double rewriting.
+            rewrite_context: Optional conversation context for the internal rewriter.
         
         Returns:
             If return_details=False: List of RetrievalResult sorted by relevance.
@@ -245,10 +286,18 @@ class HybridSearch:
             raise ValueError("Query cannot be empty or whitespace-only")
         
         effective_top_k = top_k if top_k is not None else self.config.fusion_top_k
+
+        rewrite_plan = self._build_rewrite_plan(
+            query,
+            query_variants=query_variants,
+            context=rewrite_context,
+            trace=trace,
+        )
+        searched_queries = [query, *rewrite_plan.queries]
         
         logger.debug(f"HybridSearch: query='{query[:50]}...', top_k={effective_top_k}")
         
-        # Step 1: Process query
+        # Step 1: Process the original query for filters and debug details.
         _t0 = time.monotonic()
         processed_query = self._process_query(query)
         _elapsed = (time.monotonic() - _t0) * 1000.0
@@ -261,6 +310,17 @@ class HybridSearch:
         
         # Merge explicit filters with query-extracted filters
         merged_filters = self._merge_filters(processed_query.filters, filters)
+
+        if len(searched_queries) > 1:
+            return self._search_multiple_queries(
+                searched_queries=searched_queries,
+                original_processed_query=processed_query,
+                merged_filters=merged_filters,
+                effective_top_k=effective_top_k,
+                rewrite_plan=rewrite_plan,
+                trace=trace,
+                return_details=return_details,
+            )
         
         # Step 2: Run retrievals
         dense_results, sparse_results, dense_error, sparse_error = self._run_retrievals(
@@ -317,9 +377,182 @@ class HybridSearch:
                 sparse_error=sparse_error,
                 used_fallback=used_fallback,
                 processed_query=processed_query,
+                rewrite_plan=rewrite_plan,
+                searched_queries=searched_queries,
             )
         
         return final_results
+
+    def _build_rewrite_plan(
+        self,
+        query: str,
+        *,
+        query_variants: Optional[List[str]],
+        context: Optional[str],
+        trace: Optional[Any],
+    ) -> QueryRewritePlan:
+        """Resolve external variants or invoke the configured rewriter."""
+        from src.libs.query_rewriter import QueryRewritePlan, RewrittenQuery
+
+        if query_variants is not None:
+            seen = {query.strip().casefold()}
+            rewrites = []
+            for index, variant in enumerate(query_variants, start=1):
+                cleaned = str(variant).strip()
+                identity = cleaned.casefold()
+                if not cleaned or identity in seen:
+                    continue
+                seen.add(identity)
+                rewrites.append(
+                    RewrittenQuery(
+                        query_id=f"external_{index}",
+                        purpose="externally supplied retrieval query",
+                        query=cleaned,
+                    )
+                )
+                if len(rewrites) >= self.config.max_rewrite_queries:
+                    break
+            return QueryRewritePlan(
+                original_query=query,
+                rewrite_needed=bool(rewrites),
+                strategy="external_query_variants",
+                reason="Internal rewriting bypassed because variants were supplied.",
+                rewritten_queries=rewrites,
+            )
+
+        if self.query_rewriter is None:
+            return QueryRewritePlan(original_query=query)
+
+        _t0 = time.monotonic()
+        plan = self.query_rewriter.rewrite(query, context=context, trace=trace)
+        elapsed = (time.monotonic() - _t0) * 1000.0
+        if trace is not None:
+            trace.record_stage(
+                "query_rewriting",
+                plan.to_dict(),
+                elapsed_ms=elapsed,
+            )
+        return plan
+
+    def _search_multiple_queries(
+        self,
+        *,
+        searched_queries: List[str],
+        original_processed_query: ProcessedQuery,
+        merged_filters: Dict[str, Any],
+        effective_top_k: int,
+        rewrite_plan: QueryRewritePlan,
+        trace: Optional[Any],
+        return_details: bool,
+    ) -> List[RetrievalResult] | HybridSearchResult:
+        """Retrieve each query and combine every ranking list with weighted RRF."""
+        ranking_lists: List[List[RetrievalResult]] = []
+        weights: List[float] = []
+        all_dense: List[RetrievalResult] = []
+        all_sparse: List[RetrievalResult] = []
+        dense_errors: List[str] = []
+        sparse_errors: List[str] = []
+        rewrite_count = max(1, len(searched_queries) - 1)
+
+        for query_index, current_query in enumerate(searched_queries):
+            processed = (
+                original_processed_query
+                if query_index == 0
+                else self._process_query(current_query)
+            )
+            dense, sparse, dense_error, sparse_error = self._run_retrievals(
+                processed_query=processed,
+                filters=merged_filters,
+                trace=trace,
+            )
+            query_weight = (
+                1.0
+                if query_index == 0
+                else self.config.rewrite_weight / rewrite_count
+            )
+            if dense:
+                ranking_lists.append(dense)
+                weights.append(self.config.dense_weight * query_weight)
+                all_dense.extend(dense)
+            if sparse:
+                ranking_lists.append(sparse)
+                weights.append(self.config.sparse_weight * query_weight)
+                all_sparse.extend(sparse)
+            if dense_error:
+                dense_errors.append(f"{current_query}: {dense_error}")
+            if sparse_error:
+                sparse_errors.append(f"{current_query}: {sparse_error}")
+
+        if not ranking_lists and (dense_errors or sparse_errors):
+            raise RuntimeError(
+                "All retrieval paths failed. "
+                f"Dense errors: {'; '.join(dense_errors) or 'none'}. "
+                f"Sparse errors: {'; '.join(sparse_errors) or 'none'}"
+            )
+
+        if self.fusion is None:
+            fused = self._interleave_many(ranking_lists, effective_top_k)
+        elif ranking_lists:
+            fused = self.fusion.fuse_with_weights(
+                ranking_lists=ranking_lists,
+                weights=weights,
+                top_k=effective_top_k,
+                trace=trace,
+            )
+        else:
+            fused = []
+
+        if merged_filters and self.config.metadata_filter_post:
+            fused = self._apply_metadata_filters(fused, merged_filters)
+        final_results = fused[:effective_top_k]
+
+        if trace is not None:
+            trace.record_stage(
+                "multi_query_fusion",
+                {
+                    "queries": searched_queries,
+                    "ranking_list_count": len(ranking_lists),
+                    "weights": weights,
+                    "result_count": len(final_results),
+                    "chunks": _snapshot_results(final_results),
+                },
+            )
+
+        if return_details:
+            return HybridSearchResult(
+                results=final_results,
+                dense_results=all_dense,
+                sparse_results=all_sparse,
+                dense_error="; ".join(dense_errors) or None,
+                sparse_error="; ".join(sparse_errors) or None,
+                used_fallback=bool(dense_errors or sparse_errors),
+                processed_query=original_processed_query,
+                rewrite_plan=rewrite_plan,
+                searched_queries=searched_queries,
+            )
+        return final_results
+
+    @staticmethod
+    def _interleave_many(
+        ranking_lists: List[List[RetrievalResult]],
+        top_k: int,
+    ) -> List[RetrievalResult]:
+        """Round-robin fallback for an arbitrary number of ranking lists."""
+        seen: set[str] = set()
+        output: List[RetrievalResult] = []
+        max_length = max((len(items) for items in ranking_lists), default=0)
+        for rank in range(max_length):
+            for items in ranking_lists:
+                if rank >= len(items):
+                    continue
+                item = items[rank]
+                if item.chunk_id in seen:
+                    continue
+                seen.add(item.chunk_id)
+                output.append(item)
+                if len(output) >= top_k:
+                    return output
+        return output
     
     def _process_query(self, query: str) -> ProcessedQuery:
         """Process raw query using QueryProcessor.
@@ -767,6 +1000,7 @@ def create_hybrid_search(
     dense_retriever: Optional[DenseRetriever] = None,
     sparse_retriever: Optional[SparseRetriever] = None,
     fusion: Optional[RRFFusion] = None,
+    query_rewriter: Optional[BaseQueryRewriter] = None,
 ) -> HybridSearch:
     """Factory function to create HybridSearch with default components.
     
@@ -807,4 +1041,5 @@ def create_hybrid_search(
         dense_retriever=dense_retriever,
         sparse_retriever=sparse_retriever,
         fusion=fusion,
+        query_rewriter=query_rewriter,
     )
